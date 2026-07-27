@@ -1,0 +1,21 @@
+{
+  "name": "soldisco",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=24.18.0"
+  },
+  "packageManager": "npm@11.16.0",
+  "scripts": {
+    "dev": "npm --prefix apps/web run dev",
+    "build": "npm --prefix apps/web run build",
+    "lint": "npm exec --prefix apps/web -- eslint \"apps/web/**/*.{ts,tsx,mts}\" \"packages/**/src/**/*.ts\" --config apps/web/eslint.config.mjs",
+    "typecheck:web": "npm --prefix apps/web run typecheck",
+    "typecheck:packages": "npm exec --prefix apps/web -- tsc -p packages/tsconfig.json",
+    "typecheck": "npm run typecheck:web && npm run typecheck:packages",
+    "test": "npm --prefix apps/web test",
+    "audit:prod": "npm audit --prefix apps/web --omit=dev --omit=optional --audit-level=high",
+    "quality": "npm run lint && npm run typecheck && npm run test",
+    "verify": "npm run quality && npm run audit:prod"
+  }
+}

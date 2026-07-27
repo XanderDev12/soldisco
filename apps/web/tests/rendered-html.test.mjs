@@ -1,0 +1,89 @@
+import assert from "node:assert/strict";
+import { access, readFile } from "node:fs/promises";
+import test from "node:test";
+
+const webRoot = new URL("../", import.meta.url);
+
+async function render() {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+
+  return worker.fetch(
+    new Request("http://localhost/", {
+      headers: { accept: "text/html" },
+    }),
+    {
+      ASSETS: {
+        fetch: async () => new Response("Not found", { status: 404 }),
+      },
+    },
+    {
+      waitUntil() {},
+      passThroughOnException() {},
+    },
+  );
+}
+
+test("server-renders the Soldisco discovery console", async () => {
+  const response = await render();
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
+
+  const html = await response.text();
+  assert.match(html, /<title>SolDisco — Solana Discovery Console<\/title>/i);
+  assert.match(html, /SOLDISCO/);
+  assert.match(html, /All coins/);
+  assert.match(html, /DISCOVERY IDLE/);
+  assert.match(html, /No tokens yet/);
+  assert.match(html, /No strategy active/);
+  assert.match(html, /Position data unavailable/);
+  assert.match(html, /Resize navigation/);
+  assert.match(html, /Resize token inspector/);
+  assert.match(html, /Resize positions tray/);
+  assert.doesNotMatch(
+    html,
+    /DEMO ENVIRONMENT|Fictional market data|Demo fixture|System healthy|Updated now|fixture source/i,
+  );
+  assert.doesNotMatch(html, /\b(?:NOVA|PXFRG|LUMA|ORBIT|PEBBLE|BLIP|TIDAL|MOSS|PIXEL)\b/i);
+  assert.doesNotMatch(html, /codex-preview/i);
+  assert.doesNotMatch(html, /Your site is taking shape/);
+  assert.doesNotMatch(html, /react-loading-skeleton/);
+});
+
+test("keeps empty trackers and execution boundaries explicit", async () => {
+  const [dashboard, page, layout, packageJson, styles] = await Promise.all([
+    readFile(new URL("../app/components/DiscoveryDashboard.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /<DiscoveryDashboard \/>/);
+  assert.match(layout, /SolDisco — Solana Discovery Console/);
+  assert.match(dashboard, /No route, quote, wallet, or execution service is connected/);
+  assert.match(dashboard, /Review \{side\.toLowerCase\(\)\}/);
+  assert.match(dashboard, /soldisco\.layout\.v1/);
+  assert.match(dashboard, /role="separator"/);
+  assert.match(dashboard, /selected\.checks\.length/);
+  assert.match(dashboard, /disabled/);
+  assert.doesNotMatch(dashboard, /\bfetch\s*\(/);
+  assert.doesNotMatch(dashboard, /\bWebSocket\s*\(/);
+  assert.doesNotMatch(
+    dashboard,
+    /DEMO ENVIRONMENT|Fictional market data|Demo fixture|System healthy|Updated now|demo tokens|fixture source|Demo data|Demo evaluation|demo wallet|Planned metrics|DEMO TICKET|3 checks/i,
+  );
+  assert.doesNotMatch(
+    dashboard,
+    /"(?:NOVA|PXFRG|LUMA|ORBIT|PEBBLE|BLIP|TIDAL|MOSS|PIXEL)"|\$(?:84\.20|42\.80|127\.00)|[+-]\$(?:6\.42|1\.06|5\.36)|\b(?:18\.4|41\.7|1\.2)\b/i,
+  );
+  assert.doesNotMatch(
+    styles,
+    /token-logo--(?:luma|orbit|pebble|blip|tidal|nova|moss|pixel)/i,
+  );
+  assert.doesNotMatch(packageJson, /react-loading-skeleton/);
+
+  await assert.rejects(access(new URL("../app/_sites-preview", import.meta.url)));
+  await access(new URL(".openai/hosting.json", webRoot));
+});
