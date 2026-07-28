@@ -3,6 +3,52 @@ import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 
 const webRoot = new URL("../", import.meta.url);
+const dashboardRoot = new URL(
+  "../app/components/dashboard/",
+  import.meta.url,
+);
+const dashboardSourceFiles = [
+  "DiscoveryDashboard.tsx",
+  "DashboardTopbar.tsx",
+  "PositionsTray.tsx",
+  "Sidebar.tsx",
+  "StrategyUploadModal.tsx",
+  "TokenBadges.tsx",
+  "TokenInspector.tsx",
+  "TokenStreamHeader.tsx",
+  "TokenStreamView.tsx",
+  "TokenTable.tsx",
+  "TradeTicket.tsx",
+  "WalletUnavailableToast.tsx",
+  "navigation.ts",
+  "types.ts",
+  "useDashboardLayout.ts",
+  "inspector/OverviewTab.tsx",
+  "inspector/PositionTab.tsx",
+  "inspector/RiskTab.tsx",
+  "inspector/SignalsTab.tsx",
+  "views/AlertsView.tsx",
+  "views/ControlsView.tsx",
+  "views/DashboardSectionView.tsx",
+  "views/InitialApprovalView.tsx",
+  "views/OrdersView.tsx",
+  "views/PositionsView.tsx",
+  "views/ReplaysView.tsx",
+  "views/SectionViewPrimitives.tsx",
+  "views/StrategiesView.tsx",
+  "views/WatchlistView.tsx",
+];
+
+async function readDashboardSources() {
+  return Object.fromEntries(
+    await Promise.all(
+      dashboardSourceFiles.map(async (path) => [
+        path,
+        await readFile(new URL(path, dashboardRoot), "utf8"),
+      ]),
+    ),
+  );
+}
 
 async function render() {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -82,47 +128,54 @@ test("server-renders the Soldisco discovery console", async () => {
 });
 
 test("keeps empty trackers and execution boundaries explicit", async () => {
-  const [dashboard, sectionViews, page, layout, packageJson, styles] =
+  const [sources, page, layout, packageJson, styles] =
     await Promise.all([
-      readFile(new URL("../app/components/DiscoveryDashboard.tsx", import.meta.url), "utf8"),
-      readFile(new URL("../app/components/DashboardSectionView.tsx", import.meta.url), "utf8"),
+      readDashboardSources(),
       readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
       readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
       readFile(new URL("../package.json", import.meta.url), "utf8"),
       readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     ]);
+  const dashboard = sources["DiscoveryDashboard.tsx"];
+  const allDashboardSource = Object.values(sources).join("\n");
 
   assert.match(page, /<DiscoveryDashboard \/>/);
+  assert.match(page, /components\/dashboard\/DiscoveryDashboard/);
   assert.match(layout, /SolDisco — Solana Discovery Console/);
-  assert.match(dashboard, /No route, quote, wallet, or execution service is connected/);
-  assert.match(dashboard, /Review \{side\.toLowerCase\(\)\}/);
-  assert.match(dashboard, /soldisco\.layout\.v1/);
-  assert.match(dashboard, /role="separator"/);
-  assert.match(dashboard, /selected\.checks\.length/);
+  assert.match(
+    allDashboardSource,
+    /No route, quote, wallet, or execution service is connected/,
+  );
+  assert.match(allDashboardSource, /Review \{side\.toLowerCase\(\)\}/);
+  assert.match(sources["useDashboardLayout.ts"], /soldisco\.layout\.v1/);
+  assert.match(allDashboardSource, /role="separator"/);
+  assert.match(sources["inspector/RiskTab.tsx"], /token\.checks\.length/);
   assert.match(dashboard, /setActiveView\(view\)/);
-  assert.match(dashboard, /onClick=\{\(\) => openView\(item\.id\)\}/);
+  assert.match(
+    sources["Sidebar.tsx"],
+    /onClick=\{\(\) => onOpenView\(item\.id\)\}/,
+  );
   assert.match(dashboard, /setStreamRunning\(\(running\) => !running\)/);
-  assert.doesNotMatch(dashboard, /item\.active/);
-  assert.match(dashboard, /disabled/);
-  assert.match(sectionViews, /No first-pass results/);
-  assert.match(sectionViews, /Watchlist is empty/);
-  assert.match(sectionViews, /Position data unavailable/);
-  assert.match(sectionViews, /Order data unavailable/);
-  assert.match(sectionViews, /No alerts configured/);
-  assert.match(sectionViews, /No validated strategies/);
-  assert.match(sectionViews, /No replay data/);
-  assert.match(sectionViews, /Discovery source/);
-  assert.doesNotMatch(dashboard, /\bfetch\s*\(/);
-  assert.doesNotMatch(dashboard, /\bWebSocket\s*\(/);
-  assert.doesNotMatch(sectionViews, /\bfetch\s*\(|\bWebSocket\s*\(/);
-  assert.doesNotMatch(dashboard, /\bEventSource\b|\bMath\.random\b|\bsetInterval\b/);
-  assert.doesNotMatch(sectionViews, /\bEventSource\b|\bMath\.random\b|\bsetInterval\b/);
+  assert.doesNotMatch(allDashboardSource, /item\.active/);
+  assert.match(allDashboardSource, /disabled/);
+  assert.match(sources["views/InitialApprovalView.tsx"], /No first-pass results/);
+  assert.match(sources["views/WatchlistView.tsx"], /Watchlist is empty/);
+  assert.match(sources["views/PositionsView.tsx"], /Position data unavailable/);
+  assert.match(sources["views/OrdersView.tsx"], /Order data unavailable/);
+  assert.match(sources["views/AlertsView.tsx"], /No alerts configured/);
+  assert.match(sources["views/StrategiesView.tsx"], /No validated strategies/);
+  assert.match(sources["views/ReplaysView.tsx"], /No replay data/);
+  assert.match(sources["views/ControlsView.tsx"], /Discovery source/);
   assert.doesNotMatch(
-    dashboard,
+    allDashboardSource,
+    /\bfetch\s*\(|\bWebSocket\s*\(|\bEventSource\b|\bMath\.random\b|\bsetInterval\b/,
+  );
+  assert.doesNotMatch(
+    allDashboardSource,
     /DEMO ENVIRONMENT|Fictional market data|Demo fixture|System healthy|Updated now|demo tokens|fixture source|Demo data|Demo evaluation|demo wallet|Planned metrics|DEMO TICKET|3 checks/i,
   );
   assert.doesNotMatch(
-    dashboard,
+    allDashboardSource,
     /"(?:NOVA|PXFRG|LUMA|ORBIT|PEBBLE|BLIP|TIDAL|MOSS|PIXEL)"|\$(?:84\.20|42\.80|127\.00)|[+-]\$(?:6\.42|1\.06|5\.36)|\b(?:18\.4|41\.7|1\.2)\b/i,
   );
   assert.doesNotMatch(
@@ -132,5 +185,47 @@ test("keeps empty trackers and execution boundaries explicit", async () => {
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 
   await assert.rejects(access(new URL("../app/_sites-preview", import.meta.url)));
+  await assert.rejects(
+    access(new URL("../app/components/DiscoveryDashboard.tsx", import.meta.url)),
+  );
+  await assert.rejects(
+    access(new URL("../app/components/DashboardSectionView.tsx", import.meta.url)),
+  );
   await access(new URL(".openai/hosting.json", webRoot));
+});
+
+test("keeps dashboard UI split across focused modules", async () => {
+  const sources = await readDashboardSources();
+  const lineLimits = {
+    "DiscoveryDashboard.tsx": 240,
+    "TokenStreamView.tsx": 180,
+    "TokenInspector.tsx": 180,
+    "views/DashboardSectionView.tsx": 120,
+  };
+
+  assert.equal(Object.keys(sources).length, dashboardSourceFiles.length);
+  for (const [path, maximumLines] of Object.entries(lineLimits)) {
+    const lineCount = sources[path].split("\n").length;
+    assert.ok(
+      lineCount <= maximumLines,
+      `${path} should stay focused (${lineCount}/${maximumLines} lines)`,
+    );
+  }
+
+  for (const path of [
+    "views/InitialApprovalView.tsx",
+    "views/WatchlistView.tsx",
+    "views/PositionsView.tsx",
+    "views/OrdersView.tsx",
+    "views/AlertsView.tsx",
+    "views/StrategiesView.tsx",
+    "views/ReplaysView.tsx",
+    "views/ControlsView.tsx",
+    "inspector/OverviewTab.tsx",
+    "inspector/RiskTab.tsx",
+    "inspector/SignalsTab.tsx",
+    "inspector/PositionTab.tsx",
+  ]) {
+    await access(new URL(path, dashboardRoot));
+  }
 });

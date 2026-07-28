@@ -44,6 +44,23 @@ Use `npm run quality` for the complete feature gate. It checks linting,
 application and shared-package types, creates a production build, and verifies
 the server-rendered dashboard and its safety boundaries.
 
+## UI module layout
+
+The dashboard uses feature-oriented modules under `app/components/dashboard`:
+
+- `DiscoveryDashboard.tsx` owns orchestration and shared UI state only.
+- `Sidebar.tsx`, `DashboardTopbar.tsx`, and `PositionsTray.tsx` own shell
+  regions.
+- `TokenStreamView.tsx`, `TokenTable.tsx`, and `TokenInspector.tsx` compose the
+  discovery surface.
+- `views/` contains one file for every sidebar destination.
+- `inspector/` contains one file for every token-inspector tab.
+- Shared types, navigation metadata, badges, layout behavior, tickets, and
+  overlays remain in focused supporting modules.
+
+New tabs and substantial independent sections should be added as their own
+modules rather than folded into the orchestration shell.
+
 ## Next milestone
 
 Add a read-only Axiom candidate adapter and a minimal deterministic gate behind
