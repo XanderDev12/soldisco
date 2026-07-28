@@ -22,8 +22,8 @@ TypeScript, and Tailwind's CSS toolchain.
 - Keeps Paper and Live trading views distinct: Paper records simulated entry
   and exit prices without wallet controls, while Live alone exposes
   wallet-dependent actions. Neither mode enables execution yet.
-- Does not yet call Axiom, an RPC provider, a wallet, a quote service, or a
-  transaction service.
+- Does not yet call the local Rust API, Pump/PumpSwap, Raydium, a Solana RPC
+  provider, a wallet, a quote service, or a transaction service.
 
 ## Run locally
 
@@ -49,7 +49,8 @@ npm test
 From the repository root, use `npm run verify` for the complete feature gate.
 It checks linting, application and shared-package types, creates a production
 build, verifies the server-rendered dashboard and its safety boundaries, and
-runs the production dependency audit.
+runs the production dependency audit. The same command also checks Rust
+formatting, Clippy warnings, tests, and a complete workspace build.
 
 ## UI module layout
 
@@ -70,7 +71,9 @@ modules rather than folded into the orchestration shell.
 
 ## Next milestone
 
-Define the provenance, replay, candidate-window, and projection contracts, then
-add a read-only Axiom candidate adapter and minimal deterministic RPC gate.
-Wallet connectivity, quotes, signing, and transaction submission remain
-separate later milestones.
+Connect the empty dashboard to the local Rust server through HTTP commands and
+an SSE projection stream after the Pump/PumpSwap collector, durable PostgreSQL
+ingestion, recovery, and initial deterministic gate exist. Raydium can provide
+optional post-Pump venue enrichment for mints with relevant pools. Wallet
+connectivity, quotes, signing, and transaction submission remain separate later
+milestones.

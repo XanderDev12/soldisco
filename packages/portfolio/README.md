@@ -1,4 +1,9 @@
-# Portfolio
+# Portfolio (deferred TypeScript scaffold)
 
-Reconciled holdings and position records derived from confirmed fills and on-chain
-balances. Positions are not inferred directly from submitted orders.
+This package records the earlier TypeScript portfolio sketch. Portfolio
+implementation is deferred until paper trading and will belong in the Rust
+backend.
+
+Holdings and positions must be derived from reconciled fills and on-chain
+balances, never inferred directly from submitted orders or UI state. Do not add
+new backend implementation here.

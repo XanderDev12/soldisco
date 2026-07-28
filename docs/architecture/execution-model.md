@@ -8,13 +8,17 @@ The lifecycle is deliberately explicit:
 
 1. an identified strategy evaluation or manual action creates a proposal
 2. deterministic policy evaluates exposure, risk, limits, and kill switches
-3. a quote records venue, price impact, fees, minimum output, and expiry
-4. transaction preparation validates the intended route and simulates it
+3. a quote records exact venue/program/pool, route, price impact, fees, minimum
+   output, and expiry
+4. transaction preparation validates the intended route and pool identities
+   and simulates it
 5. an authorized signer approves the exact prepared transaction
 6. submission, confirmation, finality, fill reconciliation, and portfolio
    projection produce separate records
 
 Optimistic UI state is never treated as a confirmed fill or position.
+Discovery-time PumpSwap or Raydium observations are evidence, not executable
+quotes. Execution must obtain fresh venue data and reapply policy.
 
 ## Paper mode
 
@@ -35,6 +39,10 @@ Interactive live trading requires:
 - confirmation and reconciliation before portfolio updates
 
 The backend never receives a seed phrase or raw exportable private key.
+
+The local Rust discovery server does not gain signing authority merely because
+future execution may also be implemented in Rust. Interactive execution will
+use a separately reviewed boundary, and browser signing remains explicit.
 
 ## Automated mode
 

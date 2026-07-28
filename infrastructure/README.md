@@ -1,20 +1,29 @@
 # Infrastructure
 
-This directory records deferred operational decisions and will eventually hold
-real local-development or deployment assets. It is intentionally documentation
-only today and has no runtime effect.
+This directory owns reproducible local runtime dependencies and records
+explicitly deferred operational decisions.
 
-The initial backend is a modular monolith using in-process composition.
-Repository folders do not imply separate services, containers, or a service
-mesh.
+The selected development topology is local-first:
 
-Current decision markers:
+```text
+React web app :3000 -> Rust server :8080 -> PostgreSQL :5432
+                                      |
+                                      +-> Solana RPC HTTP and WebSocket
+```
 
-- `postgres` — possible relational observation and projection storage
-- `nats` — possible future durable event transport
-- `telemetry` — future logs, metrics, and traces
+The Rust backend is one modular process. The current foundation defines typed
+collector, recovery, screening, projection, Raydium, and retention job
+boundaries. Their future supervised tasks will communicate through bounded
+in-process Tokio channels; only the SSE broadcast channel exists now.
+Repository folders do not imply separate services or containers.
 
-No database, event bus, container, or observability backend has been selected or
-configured. A subdirectory remains only to preserve its decision context; real
-infrastructure should be introduced when a milestone requires it and operational
-ownership is clear.
+Current decisions:
+
+- `postgres` contains the optional Docker Compose setup for a local-only
+  PostgreSQL instance. PostgreSQL is the durable system of record and is
+  accessed only by the Rust backend.
+- `nats` records why an external message broker is not required.
+- `telemetry` records the logging and health boundary for the Rust server.
+
+No hosted backend or database is part of the current milestone. Deployment can
+be designed later without changing the domain or persistence boundaries.

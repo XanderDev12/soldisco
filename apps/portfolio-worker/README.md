@@ -1,9 +1,11 @@
-# Portfolio worker
+# Portfolio worker (deferred legacy boundary)
 
-Reserved logical job for deriving holdings, cost basis, realized and unrealized
-PnL, exposure, and estimated exit values from reconciled activity.
+This directory is an earlier TypeScript planning marker, not a runnable worker.
+Portfolio processing is deferred until paper trading.
 
-It will consume confirmed facts rather than strategy signals or optimistic UI state. Pricing, accounting rules, RPC access, and persistence are deferred.
+Its future Rust implementation will derive holdings, cost basis, realized and
+unrealized PnL, exposure, and estimated exit values from reconciled facts rather
+than strategy signals or optimistic UI state.
 
-It begins inside the modular backend process; its ownership boundary does not
-require an independent service.
+It should begin as a supervised job inside the modular Rust application. Do not
+add new implementation here.

@@ -1,12 +1,13 @@
-# AI worker
+# AI worker (deferred legacy boundary)
 
-Logical asynchronous boundary for fast, structured, advisory token triage.
+This directory is an earlier TypeScript planning marker, not a runnable worker.
+AI triage is outside the Rust backend foundation milestone.
 
-The worker will consume bounded observations and return schema-validated notes. It cannot approve or reject tokens, change deterministic risk, authorize trades, access signing material, or block the live stream.
+If advisory AI is added, it should begin as a bounded asynchronous job supervised
+inside `apps/server`. It can consume evidence snapshots and return
+schema-validated notes, but it cannot approve or reject tokens, change
+deterministic risk, authorize trades, access signing material, or block the
+live stream.
 
-It may begin as an asynchronous job inside the modular backend and be deployed
-separately only when cost, latency, or isolation requirements justify it. A
-future predictive model is a separate structured and versioned concept, not LLM
-commentary.
-
-Model selection, prompts, API access, and production behavior are deferred.
+Separation into another process is justified only by measured cost, latency, or
+isolation requirements. Do not add new implementation here.

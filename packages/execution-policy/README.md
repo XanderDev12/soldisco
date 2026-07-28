@@ -1,4 +1,8 @@
-# Execution policy
+# Execution policy (deferred TypeScript scaffold)
 
-Deterministic guardrail contracts applied after user intent and before transaction
-preparation. Policy cannot sign or submit transactions.
+This package records the earlier TypeScript guardrail sketch. Execution policy
+is deferred and will belong in the future isolated Rust execution boundary.
+
+Policy remains deterministic, runs after explicit user intent and before
+transaction preparation, and cannot sign or submit transactions. Do not add new
+backend implementation here.

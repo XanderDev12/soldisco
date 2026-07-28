@@ -11,8 +11,10 @@ accumulate in one architecture file.
 
 ## Architecture
 
-- [Overview](architecture/overview.md) — component ownership and deployment
-  shape
+- [Backend stack](architecture/backend-stack.md) — selected local topology,
+  Rust layout, HTTP/SSE boundary, workers, PostgreSQL, and Raydium enrichment
+- [Overview](architecture/overview.md) — end-to-end component ownership and
+  runtime shape
 - [Invariants](architecture/invariants.md) — rules that implementations may not
   violate
 - [Data lifecycle](architecture/data-lifecycle.md) — observations, snapshots,
@@ -27,6 +29,12 @@ accumulate in one architecture file.
 - [Wallet-Conditioned Momentum](strategies/wallet-conditioned-momentum.md) —
   first strategy design and research requirements
 
-TypeScript packages remain the executable source of truth once their contracts
-are implemented. Documents describe planned contracts explicitly and must not
-claim that deferred integrations already exist.
+The existing React/TypeScript application is the frontend source of truth.
+Rust-owned domain and API contracts become authoritative for backend behavior
+as they are implemented. Documents distinguish selected architecture from
+working integrations and must not claim that deferred collection, screening,
+trading, or wallet behavior already exists.
+
+The current runtime target is entirely local: React on `localhost:3000`, the
+Rust/Axum server on `127.0.0.1:8080`, and PostgreSQL on
+`127.0.0.1:5432`. The hosted Sites UI is not connected to the local backend.
