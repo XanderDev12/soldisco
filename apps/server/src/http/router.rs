@@ -14,7 +14,7 @@ use tower_http::{
 
 use crate::{
     config::Config,
-    http::routes::{discovery, events, health, stream, tokens},
+    http::routes::{discovery, events, health, settings, stream, tokens},
     state::AppState,
 };
 
@@ -29,7 +29,7 @@ pub fn build(state: AppState, config: &Config) -> Result<Router, RouterError> {
         HeaderValue::from_str(&config.web_origin).map_err(|_| RouterError::InvalidWebOrigin)?;
     let cors = CorsLayer::new()
         .allow_origin(web_origin)
-        .allow_methods([Method::GET, Method::POST])
+        .allow_methods([Method::GET, Method::POST, Method::PUT])
         .allow_headers([
             ACCEPT,
             CONTENT_TYPE,
@@ -41,6 +41,10 @@ pub fn build(state: AppState, config: &Config) -> Result<Router, RouterError> {
         .route("/stream", get(stream::get))
         .route("/stream/start", post(stream::start))
         .route("/stream/stop", post(stream::stop))
+        .route(
+            "/settings/prefilter-defaults",
+            get(settings::get_prefilter_defaults).put(settings::update_prefilter_defaults),
+        )
         .route("/discovery", get(discovery::get))
         .route("/tokens/{mint}", get(tokens::get))
         .route("/events", get(events::get));

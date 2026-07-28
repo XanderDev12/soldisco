@@ -71,6 +71,31 @@ function discoveryFixture() {
   };
 }
 
+function prefilterDefaultsFixture() {
+  return {
+    revision: 3,
+    values: {
+      max_event_age_ms: 15_000,
+      observation_window_ms: 60_000,
+      max_active_windows: 128,
+      rpc_requests_per_second: 1,
+      rpc_max_in_flight: 4,
+      rpc_request_timeout_ms: 5_000,
+      rpc_rate_limit_cooldown_ms: 5_000,
+    },
+    bounds: {
+      max_event_age_ms: { minimum: 1_000, maximum: 300_000 },
+      observation_window_ms: { minimum: 1_000, maximum: 3_600_000 },
+      max_active_windows: { minimum: 1, maximum: 100_000 },
+      rpc_requests_per_second: { minimum: 1, maximum: 1_000 },
+      rpc_max_in_flight: { minimum: 1, maximum: 128 },
+      rpc_request_timeout_ms: { minimum: 1, maximum: 300_000 },
+      rpc_rate_limit_cooldown_ms: { minimum: 100, maximum: 300_000 },
+    },
+    apply_requirement: "STREAM_RESTART",
+  };
+}
+
 test("parses and maps the exact observe-all browser contract", async () => {
   const [{ parseDiscoverySnapshot }, { mapDiscoverySnapshot }] =
     await Promise.all([
@@ -139,6 +164,54 @@ test("derives truthful controls from full stream state", async () => {
   assert.equal(staleBackend.database, null);
   assert.equal(staleBackend.stream.status, null);
   assert.equal(staleBackend.stream.statusLabel, "Unavailable");
+});
+
+test("strictly parses bounded prefilter defaults", async () => {
+  const { parsePrefilterDefaults } = await loadApiModule("parsers.ts");
+  const parsed = parsePrefilterDefaults(prefilterDefaultsFixture());
+
+  assert.equal(parsed.revision, 3);
+  assert.equal(parsed.values.max_event_age_ms, 15_000);
+  assert.equal(parsed.bounds.rpc_max_in_flight.maximum, 128);
+  assert.equal(parsed.apply_requirement, "STREAM_RESTART");
+
+  const outOfBounds = prefilterDefaultsFixture();
+  outOfBounds.values.max_event_age_ms = 300_001;
+  assert.throws(
+    () => parsePrefilterDefaults(outOfBounds),
+    /\$\.values\.max_event_age_ms/,
+  );
+
+  const invertedBounds = prefilterDefaultsFixture();
+  invertedBounds.bounds.rpc_max_in_flight = {
+    minimum: 10,
+    maximum: 5,
+  };
+  assert.throws(
+    () => parsePrefilterDefaults(invertedBounds),
+    /\$\.bounds\.rpc_max_in_flight\.maximum/,
+  );
+
+  const unsupportedApply = prefilterDefaultsFixture();
+  unsupportedApply.apply_requirement = "LIVE";
+  assert.throws(
+    () => parsePrefilterDefaults(unsupportedApply),
+    /\$\.apply_requirement/,
+  );
+
+  const impossibleTimeout = prefilterDefaultsFixture();
+  impossibleTimeout.values.rpc_request_timeout_ms = 16_000;
+  assert.throws(
+    () => parsePrefilterDefaults(impossibleTimeout),
+    /\$\.values\.rpc_request_timeout_ms/,
+  );
+
+  const impossibleWindow = prefilterDefaultsFixture();
+  impossibleWindow.values.observation_window_ms = 4_000;
+  assert.throws(
+    () => parsePrefilterDefaults(impossibleWindow),
+    /\$\.values\.observation_window_ms/,
+  );
 });
 
 test("preserves structured API errors and falls back safely", async () => {
@@ -234,6 +307,127 @@ test("uses versioned routes and authenticates only local control commands", asyn
       },
     ],
   ]);
+});
+
+test("reads and updates prefilter defaults through the guarded contract", async () => {
+  const { SoldiscoApiClient } = await loadApiModule("client.ts");
+  const requests = [];
+  const client = new SoldiscoApiClient(
+    "http://127.0.0.1:8080/api/v1",
+    async (url, init) => {
+      requests.push({
+        url,
+        method: init.method,
+        headers: init.headers,
+        body: init.body,
+      });
+      return Response.json(prefilterDefaultsFixture());
+    },
+  );
+
+  const current = await client.prefilterDefaults;
+  const request = {
+    expected_revision: current.revision,
+    values: {
+      ...current.values,
+      max_event_age_ms: 20_000,
+    },
+  };
+  await client.updatePrefilterDefaults(request);
+
+  assert.deepEqual(requests, [
+    {
+      url: "http://127.0.0.1:8080/api/v1/settings/prefilter-defaults",
+      method: "GET",
+      headers: { Accept: "application/json" },
+      body: undefined,
+    },
+    {
+      url: "http://127.0.0.1:8080/api/v1/settings/prefilter-defaults",
+      method: "PUT",
+      headers: {
+        Accept: "application/json",
+        "X-Soldisco-Control": "soldisco-local-ui-v1",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(request),
+    },
+  ]);
+});
+
+test("validates human-readable prefilter drafts without losing milliseconds", async () => {
+  const {
+    prefilterDraftHasChanges,
+    toPrefilterDefaultsDraft,
+    validatePrefilterDefaultsDraft,
+  } = await loadDashboardModule("controls/prefilterDefaultsDraft.ts");
+  const settings = prefilterDefaultsFixture();
+  const baseline = toPrefilterDefaultsDraft(settings.values);
+
+  assert.equal(baseline.max_event_age_ms, "15");
+  assert.equal(baseline.observation_window_ms, "60");
+  assert.equal(baseline.rpc_requests_per_second, "1");
+
+  const equivalent = {
+    ...baseline,
+    max_event_age_ms: "15.0",
+  };
+  const equivalentValidation = validatePrefilterDefaultsDraft(
+    equivalent,
+    settings.bounds,
+  );
+  assert.equal(equivalentValidation.valid, true);
+  assert.equal(
+    prefilterDraftHasChanges(
+      equivalent,
+      settings.values,
+      equivalentValidation,
+    ),
+    false,
+  );
+
+  const changed = {
+    ...baseline,
+    max_event_age_ms: "20.125",
+  };
+  const changedValidation = validatePrefilterDefaultsDraft(
+    changed,
+    settings.bounds,
+  );
+  assert.equal(changedValidation.valid, true);
+  assert.equal(changedValidation.values.max_event_age_ms, 20_125);
+  assert.equal(
+    prefilterDraftHasChanges(changed, settings.values, changedValidation),
+    true,
+  );
+
+  const tooPrecise = {
+    ...baseline,
+    rpc_request_timeout_ms: "1.0001",
+  };
+  const invalidValidation = validatePrefilterDefaultsDraft(
+    tooPrecise,
+    settings.bounds,
+  );
+  assert.equal(invalidValidation.valid, false);
+  assert.match(
+    invalidValidation.errors.rpc_request_timeout_ms,
+    /three decimal places/,
+  );
+
+  const unsafeRelationship = {
+    ...baseline,
+    max_event_age_ms: "4",
+  };
+  const unsafeValidation = validatePrefilterDefaultsDraft(
+    unsafeRelationship,
+    settings.bounds,
+  );
+  assert.equal(unsafeValidation.valid, false);
+  assert.match(
+    unsafeValidation.errors.rpc_request_timeout_ms,
+    /cannot exceed the maximum creation age/,
+  );
 });
 
 test("listens to the named soldisco event and reports reconnect state", async () => {

@@ -5,6 +5,7 @@ use std::{
 };
 
 use axum::http::{HeaderValue, Uri};
+use soldisco_api_contracts::PrefilterDefaults;
 use soldisco_domain::{Commitment, Network};
 use thiserror::Error;
 
@@ -140,6 +141,23 @@ pub enum ConfigError {
 impl Config {
     pub fn load() -> Result<Self, ConfigError> {
         Self::from_values(|name| env::var(name).ok())
+    }
+
+    #[must_use]
+    pub fn prefilter_defaults(&self) -> PrefilterDefaults {
+        PrefilterDefaults {
+            max_event_age_ms: duration_millis(self.discovery_max_event_age),
+            observation_window_ms: duration_millis(self.discovery_observation_window),
+            max_active_windows: u32::try_from(self.discovery_max_active_windows)
+                .expect("validated maximum active windows fit u32"),
+            rpc_requests_per_second: self.solana_discovery_rpc_requests_per_second,
+            rpc_max_in_flight: u32::try_from(self.solana_rpc_max_in_flight)
+                .expect("validated RPC concurrency fits u32"),
+            rpc_request_timeout_ms: duration_millis(self.solana_request_timeout),
+            rpc_rate_limit_cooldown_ms: duration_millis(
+                self.solana_discovery_rpc_rate_limit_cooldown,
+            ),
+        }
     }
 
     fn from_values(get: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
@@ -384,8 +402,12 @@ impl Config {
                 });
             }
         };
-        let solana_request_timeout =
-            parse_positive_duration("SOLANA_REQUEST_TIMEOUT_MS", &solana_request_timeout_ms)?;
+        let solana_request_timeout = parse_bounded_millisecond_duration(
+            "SOLANA_REQUEST_TIMEOUT_MS",
+            &solana_request_timeout_ms,
+            1,
+            300_000,
+        )?;
         let solana_reconnect_delay =
             parse_positive_duration("SOLANA_RECONNECT_DELAY_MS", &solana_reconnect_delay_ms)?;
         let solana_rpc_max_in_flight = parse_bounded_usize(
@@ -428,6 +450,18 @@ impl Config {
             1_000,
             3_600_000,
         )?;
+        if solana_request_timeout > discovery_max_event_age {
+            return Err(ConfigError::Invalid {
+                name: "SOLANA_REQUEST_TIMEOUT_MS",
+                reason: "cannot exceed DISCOVERY_MAX_EVENT_AGE_MS",
+            });
+        }
+        if discovery_observation_window < solana_request_timeout {
+            return Err(ConfigError::Invalid {
+                name: "DISCOVERY_OBSERVATION_WINDOW_MS",
+                reason: "cannot be shorter than SOLANA_REQUEST_TIMEOUT_MS",
+            });
+        }
         let discovery_max_active_windows = parse_bounded_usize(
             "DISCOVERY_MAX_ACTIVE_WINDOWS",
             &discovery_max_active_windows,
@@ -474,6 +508,10 @@ impl Config {
             stream_start_timeout,
         })
     }
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).expect("validated duration milliseconds fit u64")
 }
 
 fn value_or(get: &impl Fn(&str) -> Option<String>, name: &str, default: &str) -> String {
@@ -624,6 +662,18 @@ mod tests {
             std::time::Duration::from_secs(60)
         );
         assert_eq!(config.discovery_max_active_windows, 128);
+        assert_eq!(
+            config.prefilter_defaults(),
+            soldisco_api_contracts::PrefilterDefaults {
+                max_event_age_ms: 15_000,
+                observation_window_ms: 60_000,
+                max_active_windows: 128,
+                rpc_requests_per_second: 1,
+                rpc_max_in_flight: 4,
+                rpc_request_timeout_ms: 5_000,
+                rpc_rate_limit_cooldown_ms: 5_000,
+            }
+        );
     }
 
     #[test]
@@ -783,6 +833,36 @@ mod tests {
             error,
             ConfigError::Invalid {
                 name: "COLLECTOR_QUEUE_CAPACITY",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn prefilter_timeout_and_window_relationships_fail_closed() {
+        let mut values = base_values();
+        values.insert("SOLANA_REQUEST_TIMEOUT_MS".to_owned(), "16000".to_owned());
+        let error = Config::from_values(|name| values.get(name).cloned())
+            .expect_err("RPC timeout cannot exceed freshness");
+        assert!(matches!(
+            error,
+            ConfigError::Invalid {
+                name: "SOLANA_REQUEST_TIMEOUT_MS",
+                ..
+            }
+        ));
+
+        values.insert("DISCOVERY_MAX_EVENT_AGE_MS".to_owned(), "30000".to_owned());
+        values.insert(
+            "DISCOVERY_OBSERVATION_WINDOW_MS".to_owned(),
+            "15000".to_owned(),
+        );
+        let error = Config::from_values(|name| values.get(name).cloned())
+            .expect_err("observation window cannot close before RPC timeout");
+        assert!(matches!(
+            error,
+            ConfigError::Invalid {
+                name: "DISCOVERY_OBSERVATION_WINDOW_MS",
                 ..
             }
         ));

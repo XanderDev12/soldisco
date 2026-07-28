@@ -35,8 +35,8 @@
 - Prefilter successful direct logs for fresh Pump creation or PumpSwap
   pool-creation events; discard failed, stale, and irrelevant firehose traffic
   before HTTP.
-- During one running server process, give each selected signature at most one
-  authoritative `getTransaction` attempt after cross-subscription
+- During one continuously running stream instance, give each selected
+  signature at most one authoritative `getTransaction` attempt after cross-subscription
   deduplication, under global request pacing and a concurrency bound shared by
   both sources. A discovery that ages out before admission is skipped without
   HTTP. A miss skips the attempted signature without retry or WebSocket

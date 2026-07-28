@@ -8,12 +8,19 @@ use axum::http::{
     HeaderMap,
     header::{HOST, ORIGIN},
 };
-use soldisco_api_contracts::{DiscoverySnapshot, DiscoveryToken, LiveEnvelope, LiveEvent};
+use soldisco_api_contracts::{
+    DiscoverySnapshot, DiscoveryToken, LiveEnvelope, LiveEvent, PrefilterDefaults,
+    PrefilterDefaultsBounds, PrefilterDefaultsResponse, SettingsApplyRequirement,
+};
 use soldisco_persistence::{Database, PersistenceError};
 use tokio::sync::broadcast;
 use tracing::error;
 
-use crate::{config::Config, jobs::pipeline::PipelineConfig, supervisor::StreamSupervisor};
+use crate::{
+    config::Config,
+    jobs::pipeline::PipelineConfig,
+    supervisor::{StreamSupervisor, SupervisorError},
+};
 
 const LIVE_EVENT_BUFFER: usize = 256;
 const DISCOVERY_INVALIDATION_DELAY: Duration = Duration::from_millis(250);
@@ -43,6 +50,9 @@ pub struct LiveEventBus {
 
 impl AppState {
     pub async fn new(database: Database, config: &Config) -> Result<Self, PersistenceError> {
+        database
+            .initialize_prefilter_defaults(config.prefilter_defaults())
+            .await?;
         let events = LiveEventBus::new();
         let supervisor = StreamSupervisor::restore(
             database.clone(),
@@ -92,6 +102,24 @@ impl AppState {
         self.inner.database.load_discovery_token(mint).await
     }
 
+    pub async fn prefilter_defaults(&self) -> Result<PrefilterDefaultsResponse, PersistenceError> {
+        let stored = self.inner.supervisor.prefilter_defaults().await?;
+        Ok(prefilter_defaults_response(stored))
+    }
+
+    pub async fn update_prefilter_defaults(
+        &self,
+        expected_revision: u64,
+        values: PrefilterDefaults,
+    ) -> Result<PrefilterDefaultsResponse, SupervisorError> {
+        let stored = self
+            .inner
+            .supervisor
+            .update_prefilter_defaults(expected_revision, values)
+            .await?;
+        Ok(prefilter_defaults_response(stored))
+    }
+
     #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<LiveEnvelope> {
         self.inner.events.subscribe()
@@ -114,6 +142,17 @@ impl AppState {
     #[must_use]
     pub fn local_control_authorized(&self, headers: &HeaderMap) -> bool {
         local_control_headers_authorized(headers, &self.inner.web_origin, &self.inner.api_authority)
+    }
+}
+
+fn prefilter_defaults_response(
+    stored: soldisco_persistence::StoredPrefilterDefaults,
+) -> PrefilterDefaultsResponse {
+    PrefilterDefaultsResponse {
+        values: stored.values,
+        bounds: PrefilterDefaultsBounds::SUPPORTED,
+        revision: stored.revision,
+        apply_requirement: SettingsApplyRequirement::StreamRestart,
     }
 }
 

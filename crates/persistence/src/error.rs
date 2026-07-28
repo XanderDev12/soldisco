@@ -1,3 +1,4 @@
+use soldisco_api_contracts::PrefilterDefaultsValidationError;
 use soldisco_domain::Network;
 use thiserror::Error;
 
@@ -21,6 +22,10 @@ pub enum PersistenceError {
     MustBePositive { field: &'static str },
     #[error("{field} exceeds the supported maximum of {maximum}")]
     LimitTooLarge { field: &'static str, maximum: u32 },
+    #[error("invalid prefilter defaults: {0}")]
+    InvalidPrefilterDefaults(#[from] PrefilterDefaultsValidationError),
+    #[error("prefilter defaults revision conflict: expected {expected}, actual {actual:?}")]
+    PrefilterDefaultsRevisionConflict { expected: u64, actual: Option<u64> },
     #[error("{field} is not valid standard base64")]
     InvalidBase64 { field: &'static str },
     #[error("{field} is longer than the supported maximum of {maximum} bytes")]

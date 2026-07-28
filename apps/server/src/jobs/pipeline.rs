@@ -5,7 +5,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use soldisco_api_contracts::StreamStatus;
+use soldisco_api_contracts::{PrefilterDefaults, StreamStatus};
 use soldisco_discovery_engine::ObservationWindowRegistry;
 use soldisco_domain::{MarketIdentity, Network, ObservationKey, SourceProgram, Venue};
 use soldisco_persistence::{
@@ -100,6 +100,23 @@ impl From<&Config> for PipelineConfig {
 }
 
 impl PipelineConfig {
+    #[must_use]
+    pub fn with_prefilter_defaults(&self, values: PrefilterDefaults) -> Self {
+        let mut next = self.clone();
+        next.collector.maximum_discovery_age = Duration::from_millis(values.max_event_age_ms);
+        next.collector.observation_window_duration =
+            Duration::from_millis(values.observation_window_ms);
+        next.collector.rpc_max_in_flight = usize::try_from(values.rpc_max_in_flight)
+            .expect("supported RPC concurrency fits usize");
+        next.collector.request_timeout = Duration::from_millis(values.rpc_request_timeout_ms);
+        next.maximum_active_windows = usize::try_from(values.max_active_windows)
+            .expect("supported active-window limit fits usize");
+        next.discovery_rpc_requests_per_second = values.rpc_requests_per_second;
+        next.discovery_rpc_rate_limit_cooldown =
+            Duration::from_millis(values.rpc_rate_limit_cooldown_ms);
+        next
+    }
+
     #[must_use]
     pub fn discovery_rpc_gate(&self) -> DiscoveryRpcGate {
         DiscoveryRpcGate::new(
@@ -1088,8 +1105,9 @@ mod tests {
     use std::{collections::VecDeque, time::Duration};
 
     use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use soldisco_api_contracts::PrefilterDefaults;
     use soldisco_discovery_engine::ObservationWindowRegistry;
-    use soldisco_domain::ChainCoordinate;
+    use soldisco_domain::{ChainCoordinate, Commitment, Network};
     use soldisco_solana_rpc::TransactionInstructionRecord;
     use soldisco_source_pump::{
         ANCHOR_EVENT_CPI_DISCRIMINATOR, COMPLETE_EVENT_DISCRIMINATOR, CREATE_EVENT_DISCRIMINATOR,
@@ -1098,11 +1116,14 @@ mod tests {
 
     use super::{
         BatchPurpose, DISCOVERY_RPC_FAILURES_BEFORE_DEGRADED, PIPELINE_RESTART_MAX_DELAY,
-        PipelineError, ProgramLogBatch, SOLANA_DEVNET_GENESIS_HASH, SOLANA_MAINNET_GENESIS_HASH,
-        batch_selects_event, decode_batch_events, next_restart_delay, pipeline_error_is_retryable,
-        prune_flow, stream_status,
+        PipelineConfig, PipelineError, ProgramLogBatch, SOLANA_DEVNET_GENESIS_HASH,
+        SOLANA_MAINNET_GENESIS_HASH, batch_selects_event, decode_batch_events, next_restart_delay,
+        pipeline_error_is_retryable, prune_flow, stream_status,
     };
-    use crate::jobs::maintenance::MaintenanceError;
+    use crate::jobs::{
+        collector::CollectorRuntimeConfig,
+        maintenance::{MaintenanceError, MaintenanceRuntimeConfig},
+    };
 
     fn complete_event_bytes(marker: u8) -> Vec<u8> {
         let mut bytes = COMPLETE_EVENT_DISCRIMINATOR.to_vec();
@@ -1191,6 +1212,68 @@ mod tests {
         assert_eq!(
             next_restart_delay(PIPELINE_RESTART_MAX_DELAY),
             PIPELINE_RESTART_MAX_DELAY
+        );
+    }
+
+    #[test]
+    fn persisted_prefilter_defaults_overlay_only_collector_admission_fields() {
+        let base = PipelineConfig {
+            http_url: "https://example.invalid".to_owned(),
+            ws_url: "wss://example.invalid".to_owned(),
+            collector: CollectorRuntimeConfig {
+                network: Network::SolanaMainnet,
+                commitment: Commitment::Confirmed,
+                reconnect_delay: Duration::from_secs(1),
+                request_timeout: Duration::from_secs(5),
+                rpc_max_in_flight: 4,
+                notification_processing_capacity: 2_048,
+                subscription_idle_timeout: Duration::from_secs(30),
+                maximum_discovery_age: Duration::from_secs(15),
+                observation_window_duration: Duration::from_secs(60),
+            },
+            maintenance: MaintenanceRuntimeConfig {
+                terminal_history_retention: Duration::from_secs(60),
+                projection_event_retention: Duration::from_secs(60),
+                quarantine_retention: Duration::from_secs(60),
+                interval: Duration::from_secs(60),
+                batch_size: 100,
+                database_max_bytes: 1_000_000,
+            },
+            queue_capacity: 2_048,
+            maximum_active_windows: 128,
+            discovery_rpc_requests_per_second: 1,
+            discovery_rpc_rate_limit_cooldown: Duration::from_secs(5),
+        };
+        let next = base.with_prefilter_defaults(PrefilterDefaults {
+            max_event_age_ms: 20_000,
+            observation_window_ms: 90_000,
+            max_active_windows: 512,
+            rpc_requests_per_second: 8,
+            rpc_max_in_flight: 16,
+            rpc_request_timeout_ms: 4_000,
+            rpc_rate_limit_cooldown_ms: 9_000,
+        });
+
+        assert_eq!(
+            next.collector.maximum_discovery_age,
+            Duration::from_secs(20)
+        );
+        assert_eq!(
+            next.collector.observation_window_duration,
+            Duration::from_secs(90)
+        );
+        assert_eq!(next.maximum_active_windows, 512);
+        assert_eq!(next.collector.rpc_max_in_flight, 16);
+        assert_eq!(next.collector.request_timeout, Duration::from_secs(4));
+        assert_eq!(next.discovery_rpc_requests_per_second, 8);
+        assert_eq!(
+            next.discovery_rpc_rate_limit_cooldown,
+            Duration::from_secs(9)
+        );
+        assert_eq!(next.queue_capacity, base.queue_capacity);
+        assert_eq!(
+            next.collector.notification_processing_capacity,
+            base.collector.notification_processing_capacity
         );
     }
 

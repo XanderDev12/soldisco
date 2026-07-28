@@ -64,14 +64,14 @@ The current Rust foundation loads and validates:
 | `SOLANA_RPC_HTTP_URL` | Genesis verification and one-shot discovery transaction reads |
 | `SOLANA_RPC_WS_URL` | Pump and PumpSwap program-log PubSub |
 | `SOLANA_COMMITMENT` | Explicit `confirmed` or `finalized` read level; `getTransaction` cannot use `processed` |
-| `SOLANA_REQUEST_TIMEOUT_MS` | Positive per-request/connect timeout |
+| `SOLANA_REQUEST_TIMEOUT_MS` | Per-request/connect timeout from 1 ms through 5 minutes; it cannot exceed `DISCOVERY_MAX_EVENT_AGE_MS` |
 | `SOLANA_RECONNECT_DELAY_MS` | Positive initial PubSub reconnect delay; connection retries back off |
 | `SOLANA_RPC_MAX_IN_FLIGHT` | One global bound shared by Pump and PumpSwap one-shot discovery fetches, from 1 through 128; defaults to 4 |
 | `SOLANA_DISCOVERY_RPC_REQUESTS_PER_SECOND` | Global start-rate limit for distinct one-shot discovery reads across Pump and PumpSwap, from 1 through 1,000; defaults to 1 |
 | `SOLANA_DISCOVERY_RPC_RATE_LIMIT_COOLDOWN_MS` | Shared delay applied to later distinct signatures after a provider rate-limit response, from 100 ms through 5 minutes; defaults to 5 seconds |
 | `SOLANA_SUBSCRIPTION_IDLE_TIMEOUT_MS` | Reconnect a silent/half-open PubSub subscription after this interval |
 | `DISCOVERY_MAX_EVENT_AGE_MS` | Maximum age of a direct creation event before it is discarded without HTTP, from 1 second through 5 minutes; defaults to 15 seconds |
-| `DISCOVERY_OBSERVATION_WINDOW_MS` | Non-extending provisional activity window opened at fresh discovery receipt and confirmed after successful normalization, from 1 second through 1 hour; defaults to 60 seconds |
+| `DISCOVERY_OBSERVATION_WINDOW_MS` | Non-extending provisional activity window opened at fresh discovery receipt and confirmed after successful normalization, from 1 second through 1 hour; defaults to 60 seconds and cannot be shorter than `SOLANA_REQUEST_TIMEOUT_MS` |
 | `DISCOVERY_MAX_ACTIVE_WINDOWS` | In-memory bound for simultaneous mint/pool observation windows, from 1 through 100,000; defaults to 128 |
 | `COLLECTOR_QUEUE_CAPACITY` | Bound reused for ahead-of-HTTP live notification work, the collector-to-processor queue, and provisional-activity holding, from 1 through 100,000; defaults to 2,048. Pending activity gets a release deadline equal to the discovery-age allowance plus the HTTP timeout, without extending its receipt-time observation window |
 | `STREAM_START_TIMEOUT_MS` | Maximum command wait for an initial stream result |
@@ -106,6 +106,51 @@ These configure only the optional local PostgreSQL container. The root
 After copying it to `.env`, the `SOLDISCO_POSTGRES_PASSWORD` value and password
 embedded in `DATABASE_URL` must match. The real `.env` is ignored by Git.
 
+## Persisted Prefilter Defaults
+
+The following validated environment values bootstrap one global
+`prefilter_defaults` row the first time the migrated database starts:
+
+```text
+DISCOVERY_MAX_EVENT_AGE_MS
+DISCOVERY_OBSERVATION_WINDOW_MS
+DISCOVERY_MAX_ACTIVE_WINDOWS
+SOLANA_DISCOVERY_RPC_REQUESTS_PER_SECOND
+SOLANA_RPC_MAX_IN_FLIGHT
+SOLANA_REQUEST_TIMEOUT_MS
+SOLANA_DISCOVERY_RPC_RATE_LIMIT_COOLDOWN_MS
+```
+
+After that first initialization, PostgreSQL is authoritative. Later
+environment edits do not silently replace settings saved from the Controls
+view. The browser reads the current values and supported integer bounds from
+`GET /api/v1/settings/prefilter-defaults`. It replaces the complete coherent
+set through the locally authorized
+`PUT /api/v1/settings/prefilter-defaults`, including the revision it read.
+Stale revisions fail with a conflict instead of overwriting another browser
+session.
+
+These settings can be changed only while the discovery stream is explicitly
+`STOPPED`. They affect observation-window identity, RPC admission, or request
+lifetime, so the saved revision applies on the next stream start. Each start
+reads the persisted row and constructs a fresh pipeline and discovery-RPC
+gate. The server never performs a hidden automatic restart or creates an
+unreported collection gap just to apply a setting.
+
+“Fresh” in this context is strictly an intake-timing decision, not an
+endorsement. A successful direct Pump `Create` or PumpSwap `CreatePool` event
+must fall inside the maximum event age (with a bounded source clock-skew
+allowance), remain fresh while waiting for global RPC admission, and return an
+exact successful signature-and-slot match from the one-shot transaction read.
+For PumpSwap, creation means a new supported pool and does not necessarily
+mean the base mint itself was newly created.
+
+Connection identities, credentials, database connection and pool settings,
+network/commitment, local HTTP binding/origin, and logging bootstrap remain
+environment-only process configuration. Strategy-specific thresholds, wallet
+profiles, momentum windows, entries, exits, and sizing belong to versioned
+strategy configuration rather than global Prefilter Defaults.
+
 ## Solana RPC selection
 
 The committed template uses Solana's public mainnet HTTP and WebSocket
@@ -121,9 +166,9 @@ mainnet/devnet identity before the database is immutably bound or ingestion can
 begin. A later network switch against the same database fails closed. Only
 successful, fresh creation logs selected by the prefilter are corroborated
 through that verified HTTP RPC because Solana PubSub has no equivalent genesis
-method. During one running server process, duplicate delivery across the Pump
-and PumpSwap subscriptions shares one selected-signature claim for the full
-freshness horizon. Each selected signature receives at most one HTTP attempt,
+method. During one continuously running stream instance, duplicate delivery
+across the Pump and PumpSwap subscriptions shares one selected-signature claim
+for the full freshness horizon. Each selected signature receives at most one HTTP attempt,
 and only if it remains fresh when global pacing and concurrency admission
 allow the request to start. A discovery that ages out while waiting is skipped
 without HTTP. A provider rate-limit response (HTTP/JSON-RPC `429` or JSON-RPC
@@ -143,10 +188,10 @@ server does not run `getSignaturesForAddress` backfill. Recovery utilities and
 tables remain reserved for a future explicitly selected completeness mode;
 old checkpoints are not consumed by this collector.
 
-A full Rust-process restart recreates the in-memory signature claims. It does
-not intentionally retry or backfill transactions, but a fresh notification
-delivered again after that restart can be treated as a new live intake
-attempt.
+Stopping and starting the stream, or restarting the Rust process, recreates the
+in-memory signature claims. Neither action intentionally retries or backfills
+transactions, but a fresh notification delivered again afterward can be
+treated as a new live intake attempt.
 
 Do not place a real password or RPC credential in this document or a committed
 `.env` file. A committed `.env.example` may contain names and clearly fake

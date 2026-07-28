@@ -33,12 +33,16 @@
    PubSub feeds and update venue-scoped trade, buy/sell, atomic-volume, and
    unique-trader activity without HTTP. It applies no qualification threshold
    and produces no approval, rejection, risk score, or opportunity score.
-5. **Operational safety (implemented)** — transient pipeline faults restart
-   with capped backoff, while network-identity mismatch and storage-limit
-   failures enter terminal `ERROR`. Sustained one-shot HTTP failures and
-   provider rate-limit state degrade the stream without retrying dropped
-   signatures; terminal history is pruned in bounded batches, and discovery
-   snapshots state when they are truncated.
+5. **Operational safety (implemented)** — global Prefilter Defaults are
+   initialized once from validated local environment values, persisted in
+   PostgreSQL with optimistic revisions, and editable from Controls only while
+   the stream is explicitly stopped. A later Start loads the current revision
+   into a fresh pipeline and RPC gate. Transient pipeline faults restart with
+   capped backoff, while network-identity mismatch and storage-limit failures
+   enter terminal `ERROR`. Sustained one-shot HTTP failures and provider
+   rate-limit state degrade the stream without retrying dropped signatures;
+   terminal history is pruned in bounded batches, and discovery snapshots
+   state when they are truncated.
 6. **Rolling qualification (planned)** — bounded rolling trades, volume,
    buy/sell balance, unique wallets, price movement, curve state, and migration
    state support an inexpensive initial qualification.

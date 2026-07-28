@@ -4,7 +4,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use soldisco_api_contracts::{DiscoveryActivity, DiscoveryMode, DiscoveryStage, DiscoveryToken};
+use soldisco_api_contracts::{
+    DiscoveryActivity, DiscoveryMode, DiscoveryStage, DiscoveryToken, PrefilterDefaults,
+    PrefilterDefaultsValidationError,
+};
 use soldisco_domain::{
     ChainCoordinate, Commitment, MarketIdentity, Network, NormalizedObservation, ObservationKey,
     ObservationPayload, SourceProgram, TradeSide, Venue,
@@ -202,6 +205,72 @@ async fn durable_pipeline_is_idempotent_recoverable_and_market_scoped() {
             requested: Network::SolanaDevnet,
         })
     ));
+
+    let initial_prefilter_defaults = PrefilterDefaults {
+        max_event_age_ms: 15_000,
+        observation_window_ms: 60_000,
+        max_active_windows: 128,
+        rpc_requests_per_second: 1,
+        rpc_max_in_flight: 4,
+        rpc_request_timeout_ms: 5_000,
+        rpc_rate_limit_cooldown_ms: 5_000,
+    };
+    let initial_prefilter = database
+        .initialize_prefilter_defaults(initial_prefilter_defaults)
+        .await
+        .expect("initial prefilter defaults");
+    assert_eq!(initial_prefilter.revision, 1);
+    assert_eq!(initial_prefilter.values, initial_prefilter_defaults);
+
+    let changed_prefilter_defaults = PrefilterDefaults {
+        max_event_age_ms: 20_000,
+        observation_window_ms: 90_000,
+        max_active_windows: 512,
+        rpc_requests_per_second: 8,
+        rpc_max_in_flight: 16,
+        rpc_request_timeout_ms: 4_000,
+        rpc_rate_limit_cooldown_ms: 9_000,
+    };
+    assert_eq!(
+        database
+            .initialize_prefilter_defaults(changed_prefilter_defaults)
+            .await
+            .expect("repeat initialization cannot overwrite persisted values"),
+        initial_prefilter
+    );
+    let updated_prefilter = database
+        .update_prefilter_defaults(1, changed_prefilter_defaults)
+        .await
+        .expect("revision-matched prefilter update");
+    assert_eq!(updated_prefilter.revision, 2);
+    assert_eq!(updated_prefilter.values, changed_prefilter_defaults);
+    assert!(matches!(
+        database
+            .update_prefilter_defaults(1, initial_prefilter_defaults)
+            .await,
+        Err(PersistenceError::PrefilterDefaultsRevisionConflict {
+            expected: 1,
+            actual: Some(2),
+        })
+    ));
+    let mut invalid_prefilter_defaults = changed_prefilter_defaults;
+    invalid_prefilter_defaults.rpc_request_timeout_ms =
+        invalid_prefilter_defaults.max_event_age_ms + 1;
+    assert!(matches!(
+        database
+            .update_prefilter_defaults(2, invalid_prefilter_defaults)
+            .await,
+        Err(PersistenceError::InvalidPrefilterDefaults(
+            PrefilterDefaultsValidationError::RpcTimeoutExceedsMaximumEventAge
+        ))
+    ));
+    assert_eq!(
+        database
+            .load_prefilter_defaults()
+            .await
+            .expect("invalid update leaves prior revision intact"),
+        updated_prefilter
+    );
 
     let created = observation(
         market(
