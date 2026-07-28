@@ -9,6 +9,8 @@ const dashboardRoot = new URL(
 );
 const dashboardSourceFiles = [
   "DiscoveryDashboard.tsx",
+  "ExecutionModeSwitch.tsx",
+  "BackendStatusNotice.tsx",
   "DashboardTopbar.tsx",
   "DiscoveryCounters.tsx",
   "RejectionLog.tsx",
@@ -22,9 +24,12 @@ const dashboardSourceFiles = [
   "TradeTicket.tsx",
   "WalletUnavailableToast.tsx",
   "executionModePresentation.ts",
+  "emptyStreamState.ts",
   "navigation.ts",
   "types.ts",
   "useDashboardLayout.ts",
+  "useCompactNavigation.ts",
+  "useDiscoveryBackend.ts",
   "inspector/OverviewTab.tsx",
   "inspector/PositionTab.tsx",
   "inspector/RiskTab.tsx",
@@ -80,12 +85,12 @@ test("server-renders the Soldisco discovery console", async () => {
   assert.match(html, /<title>SolDisco — Solana Discovery Console<\/title>/i);
   assert.match(html, /SOLDISCO/);
   assert.match(html, /Discovery/);
-  assert.match(html, /DISCOVERY STOPPED/);
-  assert.match(html, /Start the stream when you are ready to screen candidates/);
-  assert.match(html, /Pending/);
-  assert.match(html, /Approved/);
+  assert.match(html, /BACKEND UNAVAILABLE/);
+  assert.match(html, /Discovery remains empty until the local backend is reachable/);
+  assert.match(html, /Queued facts/);
+  assert.match(html, /Observed/);
   assert.match(html, /Rejected/);
-  assert.match(html, /Flow rate/);
+  assert.match(html, /Processed rate/);
   assert.match(html, /Rejection log/);
   assert.match(html, /No strategy active/);
   assert.match(html, /Resize navigation/);
@@ -117,7 +122,7 @@ test("server-renders the Soldisco discovery console", async () => {
   assert.match(html, /id="view-title"/);
   assert.match(html, /Start stream/);
   assert.match(html, /id="stream-status"[^>]*aria-live="polite"/);
-  assert.match(html, /Stream stopped/);
+  assert.match(html, />Unavailable</);
   assert.doesNotMatch(
     html,
     /Reset panel sizes|↺ Layout|Local workspace|Development build/,
@@ -168,13 +173,14 @@ test("keeps empty trackers and execution boundaries explicit", async () => {
   );
   assert.match(sources["useDashboardLayout.ts"], /soldisco\.layout\.v1/);
   assert.match(allDashboardSource, /role="separator"/);
-  assert.match(sources["inspector/RiskTab.tsx"], /token\.checks\.length/);
+  assert.match(sources["inspector/RiskTab.tsx"], /Not evaluated/);
   assert.match(dashboard, /setActiveView\(view\)/);
   assert.match(
     sources["Sidebar.tsx"],
     /onClick=\{\(\) => onOpenView\(item\.id\)\}/,
   );
-  assert.match(dashboard, /setStreamRunning\(\(running\) => !running\)/);
+  assert.match(dashboard, /useDiscoveryBackend\(\)/);
+  assert.match(dashboard, /void toggleStream\(\)/);
   assert.match(
     dashboard,
     /initialTradeDrafts: Record<ExecutionMode, TradeDraft>/,
@@ -186,10 +192,20 @@ test("keeps empty trackers and execution boundaries explicit", async () => {
   assert.match(allDashboardSource, /disabled/);
   assert.match(sources["DiscoveryCounters.tsx"], /summary\.pending/);
   assert.match(sources["DiscoveryCounters.tsx"], /summary\.approved/);
+  assert.match(sources["DiscoveryCounters.tsx"], /summary\.observed/);
   assert.match(sources["DiscoveryCounters.tsx"], /summary\.rejected/);
-  assert.match(sources["RejectionLog.tsx"], /Initial-screen failures/);
-  assert.match(sources["TokenTable.tsx"], /approvedTokens\.map/);
+  assert.match(sources["RejectionLog.tsx"], /Screening rejections/);
+  assert.doesNotMatch(sources["RejectionLog.tsx"], /Collector failures/);
+  assert.match(sources["RejectionLog.tsx"], /entry\.reasonCode/);
+  assert.match(sources["RejectionLog.tsx"], /entry\.count/);
+  assert.match(sources["TokenTable.tsx"], /tokens\.map/);
+  assert.match(sources["TokenTable.tsx"], /<th>Stage<\/th>/);
+  assert.match(sources["TokenTable.tsx"], /<th>Latest event<\/th>/);
   assert.doesNotMatch(sources["TokenTable.tsx"], /<th>First pass<\/th>/);
+  assert.doesNotMatch(
+    sources["TokenTable.tsx"],
+    /<th>(?:Risk|Rating|Strategy match|Momentum|Volume)<\/th>/,
+  );
   assert.match(
     sources["executionModePresentation.ts"],
     /No paper positions recorded/,
@@ -226,10 +242,18 @@ test("keeps empty trackers and execution boundaries explicit", async () => {
   assert.match(sources["views/AlertsView.tsx"], /No alerts configured/);
   assert.match(sources["views/StrategiesView.tsx"], /No validated strategies/);
   assert.match(sources["views/ReplaysView.tsx"], /No replay data/);
-  assert.match(sources["views/ControlsView.tsx"], /Discovery source/);
+  assert.match(sources["views/ControlsView.tsx"], /Local API/);
   assert.doesNotMatch(
     allDashboardSource,
     /\bfetch\s*\(|\bWebSocket\s*\(|\bEventSource\b|\bMath\.random\b|\bsetInterval\b/,
+  );
+  assert.match(
+    sources["useDiscoveryBackend.ts"],
+    /subscribeToSoldiscoEvents/,
+  );
+  assert.match(
+    sources["useDiscoveryBackend.ts"],
+    /Promise\.allSettled/,
   );
   assert.doesNotMatch(
     allDashboardSource,
@@ -244,6 +268,38 @@ test("keeps empty trackers and execution boundaries explicit", async () => {
     /token-logo--(?:luma|orbit|pebble|blip|tidal|nova|moss|pixel)/i,
   );
   assert.doesNotMatch(allDashboardSource, /Add to watchlist|Watchlist/);
+  assert.doesNotMatch(allDashboardSource, /More actions/);
+  assert.match(sources["ExecutionModeSwitch.tsx"], /role="radiogroup"/);
+  assert.match(sources["ExecutionModeSwitch.tsx"], /role="radio"/);
+  assert.match(
+    sources["ExecutionModeSwitch.tsx"],
+    /tabIndex=\{mode === item \? 0 : -1\}/,
+  );
+  assert.match(sources["ExecutionModeSwitch.tsx"], /ArrowRight/);
+  assert.match(sources["ExecutionModeSwitch.tsx"], /ArrowLeft/);
+  assert.match(sources["Sidebar.tsx"], /inert=\{compactAndClosed/);
+  assert.match(sources["Sidebar.tsx"], /aria-hidden=\{compactAndClosed/);
+  assert.match(
+    sources["DiscoveryDashboard.tsx"],
+    /getElementById\(`nav-\$\{activeView\}`\)\?\.focus\(\)/,
+  );
+  assert.match(
+    sources["DiscoveryDashboard.tsx"],
+    /mobileMenuButtonRef\.current\?\.focus\(\)/,
+  );
+  assert.match(sources["TokenInspector.tsx"], /role="tabpanel"/);
+  assert.match(sources["StrategyUploadModal.tsx"], /event\.key === "Escape"/);
+  assert.match(sources["StrategyUploadModal.tsx"], /event\.key !== "Tab"/);
+  assert.match(sources["StrategyUploadModal.tsx"], /dialog\.contains/);
+  assert.match(sources["TokenTable.tsx"], /Last-known discoveries/);
+  assert.match(
+    sources["useDiscoveryBackend.ts"],
+    /refreshAllQueuedRef\.current = true/,
+  );
+  assert.match(
+    sources["useDiscoveryBackend.ts"],
+    /setSurfaceError\("events", null\);[\s\S]*switch \(envelope\.event\.type\)/,
+  );
   assert.doesNotMatch(allDashboardSource, /PositionsTray|positions-tray/);
   assert.doesNotMatch(
     allDashboardSource,
@@ -322,7 +378,24 @@ test("keeps dashboard UI split across focused modules", async () => {
     "inspector/RiskTab.tsx",
     "inspector/SignalsTab.tsx",
     "inspector/PositionTab.tsx",
+    "BackendStatusNotice.tsx",
+    "useDiscoveryBackend.ts",
   ]) {
     await access(new URL(path, dashboardRoot));
+  }
+
+  for (const path of [
+    "client.ts",
+    "config.ts",
+    "contracts.ts",
+    "errors.ts",
+    "events.ts",
+    "discoveryRefresh.ts",
+    "responseFreshness.ts",
+    "mappers.ts",
+    "parsers.ts",
+    "viewModels.ts",
+  ]) {
+    await access(new URL(`./app/lib/soldisco-api/${path}`, webRoot));
   }
 });

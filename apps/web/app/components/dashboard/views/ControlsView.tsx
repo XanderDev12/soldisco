@@ -1,16 +1,17 @@
 import { executionModePresentation } from "../executionModePresentation";
 import type { ExecutionMode } from "../types";
 import { SectionHeader } from "./SectionViewPrimitives";
+import type { BackendStatusViewModel } from "../../../lib/soldisco-api/viewModels";
 
 type ControlsViewProps = {
-  streamRunning: boolean;
+  backend: BackendStatusViewModel;
   mode: ExecutionMode;
   onToggleStream: () => void;
   onModeChange: (mode: ExecutionMode) => void;
 };
 
 export function ControlsView({
-  streamRunning,
+  backend,
   mode,
   onToggleStream,
   onModeChange,
@@ -33,30 +34,39 @@ export function ControlsView({
               <p>Discovery intake control</p>
             </div>
             <span className="status-chip">
-              {streamRunning ? "Active · no source" : "Stopped"}
+              {backend.stream.statusLabel}
             </span>
           </div>
           <div className="status-list">
             <div>
               <span>Current state</span>
-              <strong>{streamRunning ? "Active" : "Stopped"}</strong>
+              <strong>{backend.stream.statusLabel}</strong>
             </div>
             <div>
-              <span>Discovery source</span>
-              <strong>Not connected</strong>
+              <span>Local API</span>
+              <strong>{backend.connectionLabel}</strong>
             </div>
             <div>
-              <span>Deterministic gate</span>
-              <strong>Not running</strong>
+              <span>Database</span>
+              <strong>{backend.database ?? "Unavailable"}</strong>
+            </div>
+            <div>
+              <span>Live updates</span>
+              <strong>{backend.liveUpdates.toLowerCase()}</strong>
+            </div>
+            <div>
+              <span>Discovery policy</span>
+              <strong>Observe all · no threshold</strong>
             </div>
           </div>
           <div className="control-card__actions">
             <button
               type="button"
-              aria-pressed={streamRunning}
+              aria-pressed={backend.stream.shouldStop}
               onClick={onToggleStream}
+              disabled={!backend.stream.canCommand}
             >
-              {streamRunning ? "Stop stream" : "Start stream"}
+              {backend.stream.buttonLabel}
             </button>
           </div>
         </article>

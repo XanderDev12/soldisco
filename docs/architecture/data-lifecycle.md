@@ -5,22 +5,23 @@ analysis can be reproduced without lookahead or hidden source filtering.
 
 ## Source observations
 
-Each normalized observation will eventually preserve:
+Each implemented Pump/PumpSwap observation preserves:
 
 - immutable observation ID and schema version
 - source program and decoder identity/version
-- raw evidence hash/reference and compact normalized decoder evidence
+- raw evidence hash and a base64 encoding of the exact decoder input bytes
 - Solana network, mint, exact pool or market, venue, and migration state when
   known
 - source event time and Soldisco receipt time
-- slot, block time, transaction signature, instruction/log coordinates,
-  commitment, and finality when applicable
+- slot, optional provider transaction index, transaction signature,
+  instruction/event coordinates, and commitment when available in the current
+  source contract
 
 Pump, PumpSwap, and each supported Raydium program are distinct source-program
 identities. Unavailable coordinates are explicit rather than invented. The
-decoder version and qualification-rule version remain visible because later
-performance is conditional on the observable universe and interpretation that
-produced it.
+decoder version remains visible because later performance is conditional on
+the observable universe and interpretation that produced it. Qualification
+rule versions join that provenance when qualification is implemented.
 
 ## Live intake and recovery
 
@@ -34,28 +35,60 @@ rules so deterministic deduplication can merge them. Recovery advances a
 checkpoint only after the relevant facts and durable downstream work have been
 committed.
 
+Recovery is deliberately bounded. If the durable checkpoint is no longer
+reachable within that bound, Soldisco records a durable collection-gap entry,
+releases the already-open live subscription, and reports `DEGRADED`. The gap is
+never silently deleted by retention and can later be marked resolved through an
+explicit future recovery path. Attributable malformed event, program-data, or
+log-scope evidence is instead written to deduplicated intake quarantine with
+decoder version, reason, coordinate, and bounded evidence; the checkpoint can
+then advance without a permanent poison pill. Unknown discriminators are
+ignored rather than treated as candidates. A structurally attributable
+historical fact whose exact market or quote cannot be resolved also receives a
+durable quarantine disposition before checkpoint advance. That evidence is not
+automatically reprocessed in this milestone.
+
 ## Persistence and correction
 
-Raw observations are append-only. A deterministic identity key prevents the
-same chain fact from being processed twice. Finality changes, chain
-reorganizations, and decoder or normalization corrections create linked
-correction events; they do not overwrite history.
+While retained, raw observations are never updated in place. A deterministic
+identity key prevents the same chain fact from being processed twice. Explicit
+retention may delete an entire eligible terminal row, and future corrections
+must create linked facts rather than overwrite retained history. Relationships
+for finality changes, chain reorganizations, and decoder or normalization
+corrections are still planned.
 
 Local PostgreSQL is selected as the durable store. Only the Rust
 `persistence` crate accesses it through SQLx. Browser code, source decoders,
 discovery rules, and risk rules do not contain database credentials or
 PostgreSQL queries.
 
-The server commits an observation and its durable work state before publishing
-a message to a bounded Tokio channel. Channels are ephemeral and may be empty
-after a restart. Workers reclaim incomplete work from PostgreSQL and process it
-idempotently.
+The server commits an observation and its durable work state before notifying
+the discovery worker. The collector transaction queue is bounded, and all
+in-process signaling is ephemeral. Workers reclaim incomplete leased work from
+PostgreSQL and process it idempotently after a restart.
 
 The database stores compact facts rather than every full RPC response forever.
-An explicit, versioned retention process may remove redundant bulky payloads
-only after preserving the normalized evidence, evidence hash/reference, chain
-coordinates, and decoder version needed for audit and replay. Any replay made
-incomplete by retention must say so.
+Implemented maintenance removes terminal observation/work history,
+replaceable projection events, and quarantine records after their configured
+ages in bounded batches. It never removes pending or leased work, current
+discovery/activity aggregates, checkpoints, market mappings, rejection
+summaries, or collection gaps. The default terminal-history window is 24
+hours, so future replay tooling must state when requested raw history is no
+longer retained.
+
+The first requested collection start verifies the configured HTTP RPC's pinned
+genesis hash, then immutably binds the database to that Solana network before
+ingestion. A mainnet/devnet switch requires a separate database. Collection
+fails closed when physical database size reaches the configured limit.
+
+The limit measures `pg_database_size`, not remaining filesystem capacity, WAL,
+other databases, Docker storage, or build artifacts. Local operation still
+requires independent free-space monitoring. Current market and discovery
+aggregates remain durable so later trades can resolve exact venue identity;
+they are not yet archived or expired. Before unfiltered collection can run
+indefinitely, a bounded active-market cache must be backed by durable lookup,
+and aggregate expiry or archival must be defined without orphaning later
+events.
 
 ## Venue identity and Raydium enrichment
 
@@ -67,10 +100,10 @@ Market-dependent facts always reference an exact venue and market:
 - Raydium CLMM pool
 - Raydium AMM v4 pool
 
-Raydium enrichment starts from a relevant Pump candidate and resolves supported
-pools for that mint. Each pool produces independent observations and snapshots.
-Price, liquidity, volume, and flow are never silently combined across
-PumpSwap, Raydium program families, or multiple pools.
+Planned Raydium enrichment starts from a relevant Pump candidate and resolves
+supported pools for that mint. Each pool produces independent observations and
+snapshots. Price, liquidity, volume, and flow are never silently combined
+across PumpSwap, Raydium program families, or multiple pools.
 
 A missing Raydium pool is an explicit unavailable observation. It does not
 become a rejection unless the active, versioned rule requires Raydium evidence.
@@ -78,7 +111,7 @@ Scanning arbitrary Raydium-only mints is not part of the initial intake.
 
 ## Candidate windows
 
-An approved candidate can open a versioned monitoring window with:
+A future approved candidate can open a versioned monitoring window with:
 
 - stable window ID, mint, market, opening trigger, and source provenance
 - opened, observed-through, expiry, and closed timestamps
@@ -91,7 +124,7 @@ Market and wallet updates can produce repeated evaluations during one window.
 
 ## Immutable snapshots
 
-A strategy evaluation references immutable snapshot IDs rather than an
+A future strategy evaluation references immutable snapshot IDs rather than an
 unversioned feature bag. Each feature records its definition version, window,
 value, availability status, reason code, and observation cutoff.
 
@@ -107,16 +140,23 @@ Snapshot families include:
 
 ## Projections
 
-Read models derive the approved-only discovery feed, screening counters,
-rejection log, inspector, strategies, alerts, orders, and positions from
-recorded PostgreSQL facts. Component statuses remain independent. The single
-stage shown by the UI is derived from those statuses and can be rebuilt.
+The implemented read model derives an `OBSERVE_ALL` discovery feed, cumulative
+activity, counters, and token-inspector data from recorded PostgreSQL facts.
+Every admitted candidate is structurally valid and remains `OBSERVED`; no
+threshold, approval, rejection, risk score, or opportunity score exists yet.
 
-HTTP snapshot responses are authoritative at the projection boundary. SSE
-events notify the local browser that projections changed; SSE is not the
-durable fact log and is not a replay feed. Every connection starts with a
-`RESYNC_REQUIRED` notification. The browser refreshes a snapshot before
-trusting subsequent live changes.
+Later read models derive the approved-only feed, screening counters, rejection
+log, strategies, alerts, orders, and positions from recorded facts. Component
+statuses remain independent. The single stage shown by the UI is derived from
+those statuses and can be rebuilt.
+
+HTTP snapshot responses are authoritative at the projection boundary. They
+return the latest bounded token set plus total/truncation metadata. SSE events
+are coalesced invalidations that notify the local browser to refresh; SSE is
+not the durable fact log and is not a replay feed. Every connection starts
+with a `RESYNC_REQUIRED` notification. The browser single-flights refreshes,
+rejects regressing snapshot sequences, and refreshes before trusting
+subsequent live changes.
 
 ## Replay
 
@@ -129,7 +169,9 @@ A replay selects an as-of point and freezes:
 - quote age, slippage, fees, priority fees, price impact, failed transactions,
   sellability, and exit assumptions
 
-Missing source data stays missing. Replays retain rejected candidates and
-outages so results do not silently benefit from survivorship or selection bias.
-Venue evidence discovered later cannot be applied to an earlier evaluation
-unless it was observable by that evaluation's cutoff.
+Missing source data stays missing. Replay logic must include retained rejected
+candidates and outage or collection-gap evidence so results do not silently
+benefit from survivorship or selection bias. If requested raw history has aged
+out under retention, the replay must declare itself incomplete. Venue evidence
+discovered later cannot be applied to an earlier evaluation unless it was
+observable by that evaluation's cutoff.

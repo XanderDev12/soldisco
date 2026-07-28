@@ -43,6 +43,15 @@ impl ApiError {
             message,
         }
     }
+
+    #[must_use]
+    pub const fn forbidden(code: &'static str, message: &'static str) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code,
+            message,
+        }
+    }
 }
 
 impl From<PersistenceError> for ApiError {
@@ -55,10 +64,17 @@ impl From<PersistenceError> for ApiError {
 impl From<SupervisorError> for ApiError {
     fn from(error: SupervisorError) -> Self {
         match error {
-            SupervisorError::CollectorUnavailable => Self::service_unavailable(
-                "PUMP_COLLECTOR_NOT_IMPLEMENTED",
-                "Pump collection is not available in this milestone.",
+            SupervisorError::ShuttingDown => Self::service_unavailable(
+                "STREAM_SHUTTING_DOWN",
+                "The discovery stream is shutting down.",
             ),
+            SupervisorError::Pipeline(error) => {
+                error!(%error, "discovery pipeline failed to start");
+                Self::service_unavailable(
+                    "STREAM_START_FAILED",
+                    "The discovery stream could not connect to its configured sources.",
+                )
+            }
             SupervisorError::Persistence(error) => error.into(),
         }
     }

@@ -8,9 +8,8 @@ publish.workspace = true
 
 [dependencies]
 soldisco-api-contracts = { path = "../api-contracts" }
-
-[dev-dependencies]
 soldisco-domain = { path = "../domain" }
+thiserror.workspace = true
 
 [lints]
 workspace = true

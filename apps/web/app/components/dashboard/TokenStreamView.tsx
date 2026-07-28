@@ -10,16 +10,20 @@ import type {
   Token,
   TradeSide,
 } from "./types";
+import type { BackendStatusViewModel } from "../../lib/soldisco-api/viewModels";
 import { TokenInspector } from "./TokenInspector";
 import { TokenStreamHeader } from "./TokenStreamHeader";
 import { TokenTable } from "./TokenTable";
 
 type TokenStreamViewProps = {
-  approvedTokens: Token[];
+  tokens: Token[];
+  tokensTotal: number;
+  tokensTruncated: boolean;
+  dataStale: boolean;
   screeningSummary: ScreeningSummary;
   rejectionLog: RejectionLogEntry[];
   selectedToken: Token | null;
-  streamRunning: boolean;
+  backend: BackendStatusViewModel;
   onSelectToken: (id: string) => void;
   onOpenControls: () => void;
   inspectorSize: number;
@@ -41,11 +45,14 @@ type TokenStreamViewProps = {
 };
 
 export function TokenStreamView({
-  approvedTokens,
+  tokens,
+  tokensTotal,
+  tokensTruncated,
+  dataStale,
   screeningSummary,
   rejectionLog,
   selectedToken,
-  streamRunning,
+  backend,
   onSelectToken,
   onOpenControls,
   inspectorSize,
@@ -69,15 +76,22 @@ export function TokenStreamView({
       className="dashboard-view dashboard-view--stream"
       aria-labelledby="view-title"
     >
-      <TokenStreamHeader streamRunning={streamRunning} />
+      <TokenStreamHeader stream={backend.stream} />
 
       <div className="stream-layout">
         <TokenTable
-          approvedTokens={approvedTokens}
+          tokens={tokens}
+          tokensTotal={tokensTotal}
+          tokensTruncated={tokensTruncated}
+          dataStale={dataStale}
           screeningSummary={screeningSummary}
           rejectionLog={rejectionLog}
           selectedToken={selectedToken}
-          streamRunning={streamRunning}
+          streamStatus={backend.stream.status}
+          streamRequestedRunning={backend.stream.requestedRunning}
+          streamIndicatorClass={backend.stream.indicatorClass}
+          streamStatusLabel={backend.stream.statusLabel}
+          backendConnected={backend.connection === "CONNECTED"}
           onSelectToken={onSelectToken}
           onOpenControls={onOpenControls}
         />

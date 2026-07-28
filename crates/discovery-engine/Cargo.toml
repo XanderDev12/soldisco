@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 serde.workspace = true
+soldisco-domain = { path = "../domain" }
 
 [lints]
 workspace = true

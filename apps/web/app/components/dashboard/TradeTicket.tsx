@@ -22,6 +22,11 @@ export function TradeTicket({
   onWallet,
 }: TradeTicketProps) {
   const presentation = executionModePresentation[mode];
+  const baseLabel = token.symbol?.trim() || "Base token";
+  const quoteLabel = token.quoteMint
+    ? `${token.quoteMint.slice(0, 4)}…${token.quoteMint.slice(-4)}`
+    : "Quote token";
+  const inputAssetLabel = side === "Buy" ? quoteLabel : baseLabel;
   const presets =
     side === "Buy"
       ? ["0.05", "0.10", "0.25", "0.50"]
@@ -61,11 +66,11 @@ export function TradeTicket({
             value={amount}
             onChange={(event) => setAmount(event.target.value)}
             inputMode="decimal"
-            aria-label={
-              side === "Buy" ? "SOL amount" : `${token.symbol} amount`
-            }
+            aria-label={`${inputAssetLabel} amount`}
           />
-          <strong>{side === "Buy" ? "SOL" : token.symbol}</strong>
+          <strong title={side === "Buy" ? token.quoteMint ?? undefined : token.mint}>
+            {inputAssetLabel}
+          </strong>
         </div>
         <div className="ticket-presets">
           {presets.map((preset) => (
@@ -101,7 +106,11 @@ export function TradeTicket({
 
       <div className="ticket-risk-line">
         <span>Current token risk</span>
-        <RiskBadge value={token.risk} />
+        {token.riskScore === null ? (
+          <strong>Not evaluated</strong>
+        ) : (
+          <RiskBadge value={token.riskScore} />
+        )}
       </div>
 
       {presentation.requiresWallet && (

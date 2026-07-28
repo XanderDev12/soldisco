@@ -1,21 +1,33 @@
-//! Pump and PumpSwap source boundary.
+//! Strict, IDL-derived Pump and PumpSwap event decoding.
 //!
-//! The next collector milestone will add verified IDL-backed binary decoders.
-//! This foundation fixes the supported program identities and the normalized
-//! event envelope without pretending that live decoding already exists.
+//! The decoder accepts only events attributed to the two supported programs,
+//! preserves exact transaction coordinates supplied by the transaction
+//! walker, and rejects malformed or unknown layouts. It performs no scoring,
+//! filtering, or trading decisions.
 
-use serde::{Deserialize, Serialize};
-use soldisco_domain::{ChainCoordinate, MarketIdentity, SourceProgram};
+mod decoder;
+mod idl;
+mod model;
 
-pub const PUMP_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
-pub const PUMP_SWAP_PROGRAM_ID: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
+pub use decoder::{
+    DecodeError, decode_anchor_event, decode_cpi_event, decode_instruction_events,
+    decode_instruction_program_data_logs, decode_program_data_bytes, decode_program_data_log,
+    is_anchor_event_cpi,
+};
+pub use idl::{
+    ANCHOR_EVENT_CPI_DISCRIMINATOR, COMPLETE_EVENT_DISCRIMINATOR,
+    COMPLETE_PUMP_AMM_MIGRATION_EVENT_DISCRIMINATOR, CREATE_EVENT_DISCRIMINATOR,
+    CREATE_POOL_EVENT_DISCRIMINATOR, DECODER_SCHEMA_VERSION, DECODER_VERSION, IDL_SOURCE_REVISION,
+    PUMP_AMM_IDL_SOURCE, PUMP_IDL_SOURCE, PUMP_PROGRAM_ID, PUMP_SWAP_BUY_EVENT_DISCRIMINATOR,
+    PUMP_SWAP_PROGRAM_ID, PUMP_SWAP_SELL_EVENT_DISCRIMINATOR, TRADE_EVENT_DISCRIMINATOR,
+};
+pub use model::{
+    DecodedPumpEvent, PumpCompleteEvent, PumpCreateEvent, PumpEvent, PumpEventKind,
+    PumpMigrationEvent, PumpProgram, PumpShareholder, PumpSwapBuyEvent, PumpSwapCreatePoolEvent,
+    PumpSwapSellEvent, PumpTradeEvent, TradeDirection,
+};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum PumpProgram {
-    Pump,
-    PumpSwap,
-}
+use soldisco_domain::SourceProgram;
 
 impl PumpProgram {
     #[must_use]
@@ -33,23 +45,6 @@ impl PumpProgram {
             Self::PumpSwap => SourceProgram::PumpSwap,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum PumpEventKind {
-    Create,
-    Trade,
-    Complete,
-    CompletePumpAmmMigration,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct PumpObservation {
-    pub program: PumpProgram,
-    pub event_kind: PumpEventKind,
-    pub coordinate: ChainCoordinate,
-    pub market: MarketIdentity,
 }
 
 #[must_use]

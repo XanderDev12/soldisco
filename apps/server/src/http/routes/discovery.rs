@@ -1,8 +1,8 @@
 use axum::{Json, extract::State};
 use soldisco_api_contracts::DiscoverySnapshot;
 
-use crate::state::AppState;
+use crate::{http::error::ApiError, state::AppState};
 
-pub async fn get(State(state): State<AppState>) -> Json<DiscoverySnapshot> {
-    Json(state.discovery_snapshot().await)
+pub async fn get(State(state): State<AppState>) -> Result<Json<DiscoverySnapshot>, ApiError> {
+    Ok(Json(state.discovery_snapshot().await?))
 }

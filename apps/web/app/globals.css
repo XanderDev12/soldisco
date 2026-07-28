@@ -390,6 +390,11 @@ input:focus-visible {
   background: rgba(46, 230, 183, 0.13);
 }
 
+.stream-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .stream-toggle--stop {
   border-color: rgba(242, 185, 96, 0.28);
   background: rgba(242, 185, 96, 0.09);
@@ -477,6 +482,31 @@ input:focus-visible {
   color: var(--amber);
   font-weight: 750;
   letter-spacing: 0.1em;
+}
+
+.backend-notice {
+  min-height: 29px;
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 18px;
+  border-bottom: 1px solid rgba(242, 185, 96, 0.14);
+  background: rgba(242, 185, 96, 0.07);
+  color: #a68d68;
+  font-size: 8px;
+}
+
+.backend-notice strong {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 7px;
+  letter-spacing: 0.05em;
+}
+
+.backend-notice--error {
+  border-bottom-color: rgba(255, 110, 106, 0.16);
+  background: rgba(255, 110, 106, 0.07);
+  color: #b77c78;
 }
 
 .content-header {
@@ -779,6 +809,11 @@ input:focus-visible {
   color: var(--teal);
 }
 
+.control-card__actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .stream-layout {
   flex: 1;
   min-height: 0;
@@ -847,6 +882,10 @@ input:focus-visible {
 
 .discovery-counter--approved dd {
   color: var(--teal);
+}
+
+.discovery-counter--observed dd {
+  color: var(--blue);
 }
 
 .discovery-counter--pending dd {
@@ -1010,6 +1049,13 @@ input:focus-visible {
   font-size: 8px;
 }
 
+.rejection-log__entries .rejection-log__count {
+  color: var(--red);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 9px;
+  text-align: right;
+}
+
 .rejection-log__entries span {
   overflow: hidden;
   color: #56615e;
@@ -1053,6 +1099,15 @@ input:focus-visible {
   width: 100%;
   border-collapse: collapse;
   white-space: nowrap;
+}
+
+.stale-data-notice {
+  padding: 8px 14px;
+  border-bottom: 1px solid rgba(242, 185, 96, 0.16);
+  background: rgba(242, 185, 96, 0.06);
+  color: #a88756;
+  font-size: 9px;
+  letter-spacing: 0.02em;
 }
 
 .token-table th {
@@ -1189,6 +1244,12 @@ input:focus-visible {
 }
 
 .status--approved .status__dot { background: var(--teal); }
+.status--observed {
+  border-color: rgba(101, 169, 255, 0.19);
+  background: rgba(101, 169, 255, 0.1);
+  color: var(--blue);
+}
+.status--observed .status__dot { background: var(--blue); }
 .status--pending {
   border-color: rgba(242, 185, 96, 0.19);
   background: var(--amber-dim);
@@ -1305,18 +1366,6 @@ input:focus-visible {
 .positive { color: var(--teal) !important; }
 .negative { color: var(--red) !important; }
 
-.row-more,
-.inspector__head-actions button {
-  border: 0;
-  background: transparent;
-  color: #53605c;
-}
-
-.row-more {
-  width: 25px;
-  height: 25px;
-}
-
 .stream-footer {
   min-height: 32px;
   display: flex;
@@ -1397,19 +1446,6 @@ input:focus-visible {
 
 .token-name--large strong {
   font-size: 13px;
-}
-
-.inspector__head-actions {
-  position: absolute;
-  top: 11px;
-  right: 10px;
-  display: flex;
-}
-
-.inspector__head-actions button {
-  width: 28px;
-  height: 26px;
-  font-size: 16px;
 }
 
 .price-block {
@@ -1520,6 +1556,16 @@ input:focus-visible {
   font-size: 7px;
 }
 
+.score-row strong {
+  overflow: hidden;
+  color: #aeb9b5;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 8px;
+  font-weight: 520;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .rating--large {
   width: 31px;
   height: 24px;
@@ -1556,6 +1602,10 @@ input:focus-visible {
   gap: 5px;
 }
 
+.metric-grid--references {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .metric-grid > div {
   min-width: 0;
   display: flex;
@@ -1572,10 +1622,13 @@ input:focus-visible {
 }
 
 .metric-grid strong {
+  overflow: hidden;
   color: #aeb9b5;
   font-family: var(--font-geist-mono), monospace;
   font-size: 8px;
   font-weight: 520;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .flow-chart {
@@ -1672,6 +1725,7 @@ input:focus-visible {
   flex: none;
   border: 4px solid;
   border-radius: 50%;
+  color: #6d7975;
 }
 
 .risk-orbit--low { border-color: var(--teal); color: var(--teal); }
@@ -2277,11 +2331,18 @@ input:focus-visible {
   .sidebar {
     width: 224px;
     transform: translateX(-100%);
-    transition: transform 180ms ease;
+    visibility: hidden;
+    pointer-events: none;
+    transition:
+      transform 180ms ease,
+      visibility 0s linear 180ms;
   }
 
   .sidebar--open {
     transform: translateX(0);
+    visibility: visible;
+    pointer-events: auto;
+    transition-delay: 0s;
   }
 
   .resize-handle--sidebar {

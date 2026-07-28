@@ -1,6 +1,8 @@
 import { DiscoveryCounters } from "./DiscoveryCounters";
+import { describeEmptyStream } from "./emptyStreamState";
 import { RejectionLog } from "./RejectionLog";
-import { MatchBadge, RiskBadge, Sparkline } from "./TokenBadges";
+import { StatusBadge } from "./TokenBadges";
+import type { StreamStatus } from "../../lib/soldisco-api/contracts";
 import type {
   RejectionLogEntry,
   ScreeningSummary,
@@ -8,24 +10,44 @@ import type {
 } from "./types";
 
 type TokenTableProps = {
-  approvedTokens: Token[];
+  tokens: Token[];
+  tokensTotal: number;
+  tokensTruncated: boolean;
+  dataStale: boolean;
   screeningSummary: ScreeningSummary;
   rejectionLog: RejectionLogEntry[];
   selectedToken: Token | null;
-  streamRunning: boolean;
+  streamStatus: StreamStatus | null;
+  streamRequestedRunning: boolean;
+  streamIndicatorClass: "live-dot" | "paused-dot" | "offline-dot";
+  streamStatusLabel: string;
+  backendConnected: boolean;
   onSelectToken: (id: string) => void;
   onOpenControls: () => void;
 };
 
 export function TokenTable({
-  approvedTokens,
+  tokens,
+  tokensTotal,
+  tokensTruncated,
+  dataStale,
   screeningSummary,
   rejectionLog,
   selectedToken,
-  streamRunning,
+  streamStatus,
+  streamRequestedRunning,
+  streamIndicatorClass,
+  streamStatusLabel,
+  backendConnected,
   onSelectToken,
   onOpenControls,
 }: TokenTableProps) {
+  const emptyStream = describeEmptyStream({
+    backendConnected,
+    streamStatus,
+    requestedRunning: streamRequestedRunning,
+  });
+
   return (
     <section
       id="stream-panel"
@@ -36,10 +58,16 @@ export function TokenTable({
         <DiscoveryCounters summary={screeningSummary} />
         <div className="stream-tools">
           <span className="last-update" role="status">
-            <i className={streamRunning ? "paused-dot" : "offline-dot"} />
-            {streamRunning
-              ? "Active · No source connected"
-              : "Stream stopped"}
+            <i
+              className={
+                backendConnected
+                  ? streamIndicatorClass
+                  : "offline-dot"
+              }
+            />
+            {backendConnected
+              ? `Stream · ${streamStatusLabel}`
+              : "Backend unavailable"}
           </span>
           <RejectionLog
             entries={rejectionLog}
@@ -57,21 +85,34 @@ export function TokenTable({
       </div>
 
       <div className="table-scroll">
+        {dataStale && tokens.length > 0 && (
+          <div className="stale-data-notice" role="status">
+            Last-known discoveries · The local backend is not providing a
+            current snapshot.
+          </div>
+        )}
         <table className="token-table">
           <thead>
             <tr>
               <th>Token</th>
-              <th>Age</th>
-              <th>Risk</th>
-              <th>Rating</th>
-              <th>Strategy match</th>
-              <th>Momentum · 2m</th>
-              <th>Volume</th>
-              <th />
+              <th>Stage</th>
+              <th>Venue</th>
+              <th>Latest event</th>
+              <th>Trades</th>
+              <th>Buy / sell</th>
+              <th>Slot</th>
             </tr>
           </thead>
           <tbody>
-            {approvedTokens.map((token) => (
+            {tokens.map((token) => {
+              const tokenLabel =
+                token.name ?? token.symbol ?? "Unknown token";
+              const tokenMonogram =
+                token.symbol?.slice(0, 1) ??
+                token.name?.slice(0, 1) ??
+                "?";
+
+              return (
               <tr
                 key={token.id}
                 className={
@@ -83,93 +124,65 @@ export function TokenTable({
                   <button
                     type="button"
                     className="token-name token-select"
-                    aria-label={`Inspect ${token.name}`}
+                    aria-label={`Inspect ${tokenLabel}`}
                     onClick={(event) => {
                       event.stopPropagation();
                       onSelectToken(token.id);
                     }}
                   >
-                    <span className={`token-logo token-logo--${token.id}`}>
-                      {token.symbol.slice(0, 1)}
+                    <span className="token-logo">
+                      {tokenMonogram}
                     </span>
                     <div>
-                      <strong>{token.name}</strong>
+                      <strong>{tokenLabel}</strong>
                       <span>
-                        {token.symbol}
-                        <i>·</i>
+                        {token.symbol && `${token.symbol} · `}
                         {token.mint}
                       </span>
                     </div>
                   </button>
                 </td>
-                <td className="mono subtle">{token.age}</td>
                 <td>
-                  <RiskBadge value={token.risk} />
+                  <StatusBadge status={token.stageLabel} />
                 </td>
-                <td>
-                  <span
-                    className={`rating rating--${token.rating.charAt(0)}`}
-                  >
-                    {token.rating}
-                  </span>
+                <td>{token.primaryVenue}</td>
+                <td>{token.lastEventKind}</td>
+                <td className="mono">{token.activity.trades}</td>
+                <td className="mono">
+                  <span className="positive">{token.activity.buys}</span>
+                  {" / "}
+                  <span className="negative">{token.activity.sells}</span>
                 </td>
-                <td>
-                  <MatchBadge match={token.match} />
-                </td>
-                <td>
-                  <div className="momentum-cell">
-                    <Sparkline
-                      values={token.momentum}
-                      positive={token.moveUp}
-                    />
-                    <span
-                      className={token.moveUp ? "positive" : "negative"}
-                    >
-                      {token.move}
-                    </span>
-                  </div>
-                </td>
-                <td className="mono">{token.volume}</td>
-                <td>
-                  <button
-                    type="button"
-                    className="row-more"
-                    aria-label={`More actions for ${token.name}`}
-                    onClick={(event) => event.stopPropagation()}
-                  >
-                    ···
-                  </button>
-                </td>
+                <td className="mono subtle">{token.observedSlot}</td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
-        {approvedTokens.length === 0 && (
+        {tokens.length === 0 && (
           <div className="empty-state empty-state--stream">
             <span>⌁</span>
-            <strong>
-              {streamRunning
-                ? "Waiting for approved candidates"
-                : "Stream stopped"}
-            </strong>
-            <p>
-              {streamRunning
-                ? "Only candidates that pass initial screening appear here."
-                : "Start the stream when you are ready to screen candidates."}
-            </p>
+            <strong>{emptyStream.title}</strong>
+            <p>{emptyStream.detail}</p>
           </div>
         )}
       </div>
 
       <footer className="stream-footer">
         <span>
-          {approvedTokens.length} approved tokens · Stream{" "}
-          {streamRunning ? "active" : "stopped"}
+          {dataStale ? "Cached · " : ""}
+          {tokensTruncated
+            ? `Showing latest ${tokens.length} of ${tokensTotal} discoveries`
+            : `${tokensTotal} discoveries`}
+          {" · "}
+          {backendConnected
+            ? `Stream ${streamStatusLabel.toLowerCase()}`
+            : "Backend unavailable"}
         </span>
         <span>
-          {streamRunning
-            ? "Pending and rejected candidates stay out of the feed"
-            : "Deterministic gate not running"}
+          {screeningSummary.mode === "OBSERVE_ALL"
+            ? "Observe-all mode · No approval threshold applied"
+            : "Approved-only mode · Explicit passes only"}
         </span>
       </footer>
     </section>

@@ -8,12 +8,14 @@ import type {
   LayoutKey,
   LayoutPreferences,
 } from "./types";
+import type { BackendStatusViewModel } from "../../lib/soldisco-api/viewModels";
 
 type LayoutLimits = Record<LayoutKey, { min: number; max: number }>;
 
 export interface SidebarProps {
   activeView: DashboardView;
-  streamRunning: boolean;
+  backend: BackendStatusViewModel;
+  compact: boolean;
   sideNavOpen: boolean;
   layout: LayoutPreferences;
   layoutLimits: LayoutLimits;
@@ -33,7 +35,8 @@ export interface SidebarProps {
 
 export function Sidebar({
   activeView,
-  streamRunning,
+  backend,
+  compact,
   sideNavOpen,
   layout,
   layoutLimits,
@@ -44,11 +47,21 @@ export function Sidebar({
   onResizeKey,
   onSetLayoutValue,
 }: SidebarProps) {
+  const compactAndClosed = compact && !sideNavOpen;
+
   return (
     <>
       <aside
         id="navigation-panel"
         className={`sidebar ${sideNavOpen ? "sidebar--open" : ""}`}
+        aria-hidden={compactAndClosed || undefined}
+        inert={compactAndClosed || undefined}
+        onKeyDown={(event) => {
+          if (compact && event.key === "Escape") {
+            event.preventDefault();
+            onCloseMobileNav();
+          }
+        }}
       >
         <div className="brand">
           <span className="brand__mark">
@@ -89,18 +102,30 @@ export function Sidebar({
         <div className="system-card">
           <div className="system-card__head">
             <span>
-              <i className="offline-dot" />
-              Services disconnected
+              <i
+                className={
+                  backend.connection === "CONNECTED"
+                    ? "live-dot"
+                    : backend.connection === "CONNECTING"
+                      ? "paused-dot"
+                      : "offline-dot"
+                }
+              />
+              Local backend
             </span>
-            <strong>—</strong>
+            <strong>{backend.overall ?? backend.connectionLabel}</strong>
           </div>
           <div className="system-card__row">
-            <span>RPC</span>
-            <span>Not connected</span>
+            <span>Database</span>
+            <span>{backend.database ?? "Unavailable"}</span>
           </div>
           <div className="system-card__row">
             <span>Stream</span>
-            <span>{streamRunning ? "Active · no source" : "Stopped"}</span>
+            <span>{backend.stream.statusLabel}</span>
+          </div>
+          <div className="system-card__row">
+            <span>Updates</span>
+            <span>{backend.liveUpdates.toLowerCase()}</span>
           </div>
         </div>
 

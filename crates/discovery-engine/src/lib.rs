@@ -1,13 +1,7 @@
 use std::collections::HashSet;
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum TradeSide {
-    Buy,
-    Sell,
-}
+use serde::Serialize;
+pub use soldisco_domain::TradeSide;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TradeObservation {

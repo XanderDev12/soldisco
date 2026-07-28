@@ -2,7 +2,7 @@ import type { RejectionLogEntry } from "./types";
 
 type RejectionLogProps = {
   entries: RejectionLogEntry[];
-  totalRejected: number;
+  totalRejected: number | null;
 };
 
 export function RejectionLog({
@@ -15,16 +15,16 @@ export function RejectionLog({
     <details className="rejection-log">
       <summary>
         Rejection log
-        <span>{totalRejected}</span>
+        <span>{totalRejected ?? "—"}</span>
       </summary>
       <div className="rejection-log__panel">
         <div className="rejection-log__head">
           <div>
-            <strong>Initial-screen failures</strong>
-            <span>Compact reason records only</span>
+            <strong>Screening rejections</strong>
+            <span>Aggregated candidate rejection reasons</span>
           </div>
-          {totalRejected > visibleEntries.length && (
-            <small>Showing latest {visibleEntries.length}</small>
+          {entries.length > visibleEntries.length && (
+            <small>Showing {visibleEntries.length} reasons</small>
           )}
         </div>
 
@@ -35,18 +35,16 @@ export function RejectionLog({
         ) : (
           <ol className="rejection-log__entries">
             {visibleEntries.map((entry) => (
-              <li key={entry.id}>
+              <li key={entry.reasonCode}>
                 <div>
-                  <strong>{entry.symbol ?? "Unknown token"}</strong>
-                  <span>{entry.mint}</span>
+                  <strong>{entry.reasonCode}</strong>
+                  <span>Rejection reason</span>
                 </div>
-                <ul>
-                  {entry.reasonCodes.map((reasonCode) => (
-                    <li key={reasonCode}>{reasonCode}</li>
-                  ))}
-                </ul>
-                <time dateTime={entry.rejectedAt}>
-                  {entry.rejectedAt}
+                <strong className="rejection-log__count">
+                  {entry.count}
+                </strong>
+                <time dateTime={entry.lastSeenAt}>
+                  {entry.lastSeenAt}
                 </time>
               </li>
             ))}

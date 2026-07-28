@@ -1,6 +1,7 @@
 "use client";
 
 import type { ExecutionMode, SectionView } from "../types";
+import type { BackendStatusViewModel } from "../../../lib/soldisco-api/viewModels";
 import { AlertsView } from "./AlertsView";
 import { ControlsView } from "./ControlsView";
 import { OrdersView } from "./OrdersView";
@@ -10,7 +11,7 @@ import { StrategiesView } from "./StrategiesView";
 
 export type DashboardSectionViewProps = {
   view: SectionView;
-  streamRunning: boolean;
+  backend: BackendStatusViewModel;
   mode: ExecutionMode;
   onToggleStream: () => void;
   onModeChange: (mode: ExecutionMode) => void;
@@ -20,7 +21,7 @@ export type DashboardSectionViewProps = {
 
 function SectionContent({
   view,
-  streamRunning,
+  backend,
   mode,
   onToggleStream,
   onModeChange,
@@ -41,7 +42,7 @@ function SectionContent({
     case "controls":
       return (
         <ControlsView
-          streamRunning={streamRunning}
+          backend={backend}
           mode={mode}
           onToggleStream={onToggleStream}
           onModeChange={onModeChange}

@@ -1,7 +1,7 @@
 use axum::{
     Router,
     http::{
-        HeaderValue, Method,
+        HeaderName, HeaderValue, Method,
         header::{ACCEPT, CONTENT_TYPE},
     },
     routing::{get, post},
@@ -30,7 +30,11 @@ pub fn build(state: AppState, config: &Config) -> Result<Router, RouterError> {
     let cors = CorsLayer::new()
         .allow_origin(web_origin)
         .allow_methods([Method::GET, Method::POST])
-        .allow_headers([ACCEPT, CONTENT_TYPE]);
+        .allow_headers([
+            ACCEPT,
+            CONTENT_TYPE,
+            HeaderName::from_static(crate::state::LOCAL_CONTROL_HEADER_NAME),
+        ]);
 
     let routes = Router::new()
         .route("/health", get(health::get))
