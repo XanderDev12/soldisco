@@ -2,7 +2,7 @@ name: soldisco
 
 services:
   postgres:
-    image: postgres:17.10-alpine3.24
+    image: postgres:18.4-alpine3.24
     environment:
       POSTGRES_DB: ${SOLDISCO_POSTGRES_DB:-soldisco}
       POSTGRES_USER: ${SOLDISCO_POSTGRES_USER:-soldisco}
