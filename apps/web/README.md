@@ -7,6 +7,10 @@ TypeScript, and Tailwind's CSS toolchain.
 ## Current behavior
 
 - Starts with an empty, filterable token stream until discovery is connected.
+- Provides accessible views for the token stream, initial approvals, watchlist,
+  positions, orders, alerts, strategies, replays, and local controls.
+- Includes a session-local start/stop control that never claims a discovery
+  source is connected.
 - Separates deterministic first-pass status, risk value, discovery rating, and
   strategy match.
 - Includes an inspector with overview, risk, signal, trade, and position views.
