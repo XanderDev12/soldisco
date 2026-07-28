@@ -15,6 +15,15 @@ Soldisco is organized around a stream-first discovery pipeline with hard boundar
 The initial UI renders disconnected, empty trackers. Synthetic records belong
 only in isolated tests and must not appear as live product state.
 
+## Frontend boundaries
+
+The web dashboard is organized by visible product responsibility. The
+orchestration component owns shared state, while each sidebar view,
+token-inspector tab, shell region, and substantial stream section lives in a
+focused module. Shared primitives are reused without combining independent
+screens into a single file. Regression tests verify the expected view files and
+keep the orchestration layer within a small line-count budget.
+
 ## Boundaries
 
 - The web app renders state and collects explicit user intent.
