@@ -20,20 +20,26 @@ always-on or cloud backend is part of the current architecture.
 
 1. A requested stream start verifies the configured HTTP RPC's pinned Solana
    genesis identity before binding the database or opening intake.
-2. Solana PubSub emits relevant Pump or PumpSwap program activity. Every
-   success or failure notification is only a trigger: authoritative HTTP RPC
-   must return the same signature, slot, and transaction status before the
-   collector accepts it. Fetches are bounded and ordered-concurrent, retries
-   are finite, and source receipt time is preserved.
-3. The current-IDL decoder strictly attributes and decodes supported
-   program-data logs and Anchor CPI event instructions.
+2. Solana PubSub emits Pump and PumpSwap program activity. Failed transactions,
+   stale discoveries, and irrelevant events are discarded from their direct
+   logs. Fresh token or pool creation immediately provisions a short activity
+   window and, within the running server process, can receive at most one
+   globally deduplicated, paced, and concurrency-bounded HTTP transaction
+   request. A discovery that ages out before admission is cancelled and skipped
+   without HTTP; an attempted request failure cancels the window and skips that
+   signature.
+3. The current-IDL decoder strictly attributes the accepted discovery
+   transaction's direct logs and Anchor CPI event instructions.
 4. The persistence boundary records decoder provenance, Solana coordinates,
    exact market identity, event time, receipt time, compact source evidence,
    and durable work state. Known malformed layouts go to quarantine.
 5. Only after commit does the server wake idempotent downstream projection
    work; PostgreSQL remains the work source of truth.
-6. The implemented discovery worker projects every structurally valid candidate
-   as `OBSERVED` and updates venue-scoped cumulative activity.
+6. The implemented discovery worker projects every structurally valid
+   candidate as `OBSERVED`. Successful normalization confirms its provisional
+   bounded in-memory window; matching mint/pool activity, including activity
+   received during the one-shot read, routes directly from PubSub into
+   venue-scoped activity.
 7. Coalesced named SSE notifications tell the browser to refresh bounded,
    authoritative HTTP snapshots whose truncation metadata is explicit.
 8. Future rolling metrics and cheap qualification limit deeper RPC work.
@@ -42,7 +48,8 @@ always-on or cloud backend is part of the current architecture.
    venue-specific evidence for the same mint.
 11. Risk and opportunity modules later add explainable, versioned results with
    freshness metadata.
-12. Approved candidates later enter time-bounded monitoring windows.
+12. Approved candidates later enter richer durable monitoring windows; these
+    are distinct from the short implemented pre-decision activity window.
 13. Market, wallet-score, and wallet-cluster snapshots later produce immutable
     strategy inputs.
 14. Enabled strategies evaluate candidates repeatedly and independently.
@@ -52,12 +59,14 @@ always-on or cloud backend is part of the current architecture.
 17. Future paper and interactive-live execution consume explicit trade
     proposals through a separate policy boundary.
 
-WebSocket live delivery is not assumed to be complete. Saved PostgreSQL
-checkpoints and Solana HTTP RPC recover missed transactions after a disconnect
-or process restart. Live and recovered facts share the same identity and
-deduplication rules. A recovery bound or missing checkpoint history creates a
-durable collection-gap record; collection resumes live but remains truthfully
-`DEGRADED` until that gap is explicitly resolved.
+WebSocket live delivery is explicitly not complete in the current live-first
+mode. After a disconnect, stream restart, pipeline-attempt restart, or process
+restart, each source resumes at the current head without HTTP backfill and the
+ephemeral window registry starts empty. One-shot transaction failures are also
+skipped. A shared rate-limit cooldown delays later distinct signatures but never
+retries the failed one. This trades completeness for low latency and bounded
+public-RPC load; reserved checkpoint/recovery components are not consumed
+unless a future explicit recovery mode is designed.
 
 The current local UI renders real `OBSERVED` discovery candidates when the
 stream is running. Empty data means the durable projection is empty, not that
@@ -80,8 +89,8 @@ thresholds and does not claim approval, rejection, risk, opportunity, or
 strategy results. Unsupported or malformed decoder inputs are not admitted as
 candidates; known malformed evidence is quarantined for bounded audit instead
 of blocking the stream. A structurally attributable fact whose market cannot be
-resolved is also durably quarantined before its checkpoint advances; automatic
-reprocessing of that historical quarantine is future work.
+resolved is also durably quarantined; automatic reprocessing of that
+historical quarantine is future work.
 
 When implemented, Raydium enrichment will be independently available, missing,
 stale, invalid, or in error for each exact pool. It will not overwrite
@@ -105,9 +114,10 @@ keep the orchestration layer within a small line-count budget.
 - `source-pump` decodes Pump and PumpSwap facts; it does not score or trade.
 - `source-raydium` is the planned venue-fact boundary; it will not approve a
   token or combine pools without explicit rules.
-- `solana-rpc` owns provider-neutral transport, recovery, and health.
-- `discovery-engine` will own rolling metrics and cheap qualification when
-  wired into the pipeline.
+- `solana-rpc` owns provider-neutral transport, health, and reserved recovery
+  primitives.
+- `discovery-engine` owns bounded observation windows and rolling metrics; cheap
+  qualification is not wired yet.
 - `risk-engine` will own deterministic checks, risk, and opportunity ratings.
 - `persistence` is the only SQLx/PostgreSQL implementation boundary.
 - `projections` creates rebuildable UI read models.
@@ -120,10 +130,11 @@ keep the orchestration layer within a small line-count budget.
 ## Process model
 
 Logical ownership boundaries do not require separate network services. The
-first operating backend composes Axum routes, Pump/PumpSwap intake, recovery,
-structural discovery projection, retention/storage maintenance, and
-observability in one Rust process. Rolling qualification, deterministic risk,
-and Raydium enrichment remain modules in this same process when implemented.
+first operating backend composes Axum routes, live-first Pump/PumpSwap intake,
+structural discovery projection, bounded observation windows,
+retention/storage maintenance, and observability in one Rust process. Rolling
+qualification, deterministic risk, and Raydium enrichment remain modules in
+this same process when implemented.
 
 Workers are supervised Tokio tasks. High-volume paths use bounded in-process
 channels for backpressure, while small control paths use focused Tokio

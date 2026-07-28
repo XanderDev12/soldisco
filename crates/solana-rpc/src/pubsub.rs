@@ -20,8 +20,9 @@ type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Creates one standard Solana `logsSubscribe` WebSocket session at a time.
 ///
-/// The server supervisor owns reconnect timing and HTTP backfill between the
-/// last durable checkpoint and a replacement subscription.
+/// The server supervisor owns reconnect timing. The current live-first mode
+/// resumes at the head; checkpoint-based HTTP backfill is reserved for a
+/// future explicit recovery mode.
 #[derive(Clone)]
 pub struct SolanaPubsubClient {
     endpoint: String,

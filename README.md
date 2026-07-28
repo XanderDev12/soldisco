@@ -25,26 +25,34 @@ local React app is connected to the Rust API.
 1. The UI starts or stops the supervised stream through locally guarded HTTP.
 2. Start verifies the HTTP RPC's pinned Solana genesis identity before the
    database is bound or Pump/PumpSwap PubSub intake opens.
-3. Every success or failure notification triggers bounded-concurrent
-   authoritative HTTP retrieval; signature, exact slot, and status must match,
-   while output remains in source order. The strict, IDL-derived decoder reads
-   program-data logs and supported Anchor CPI event instructions with exact
-   transaction coordinates and compact source evidence.
+3. Successful PubSub notifications are decoded just far enough to identify
+   fresh Pump token creation or PumpSwap pool creation. During one running
+   server process, each selected signature can receive at most one globally
+   deduplicated, paced, bounded-concurrent authoritative `getTransaction` call.
+   A discovery that ages past its freshness deadline while waiting for
+   admission is skipped before HTTP; failures, stale events, duplicate
+   subscription delivery, and unrelated firehose traffic are also skipped
+   without retrying the transaction or reconnecting a healthy subscription.
 4. Normalized observations and durable work are committed to PostgreSQL before
-   downstream processing. Chain identity deduplicates live and recovered data,
-   and the database is immutably bound to the configured Solana network before
+   downstream processing. Chain identity deduplicates accepted live data, and
+   the database is immutably bound to the configured Solana network before
    ingestion.
-5. Persisted checkpoints drive bounded HTTP recovery after reconnects or
-   restarts. If a checkpoint is outside that bound, the server records an
-   explicit collection gap and resumes live in `DEGRADED` state.
+5. A fresh discovery log immediately opens a short provisional in-memory
+   observation window so initial trades cannot race past HTTP corroboration.
+   The window is confirmed only after the one-shot transaction normalizes
+   successfully; otherwise it and its queued activity are cancelled. Matching
+   Pump mint or PumpSwap pool activity is then routed directly from the
+   existing program-log feeds and persisted without an HTTP fetch. This
+   milestone is deliberately live-first: reconnects resume at the current head
+   and do not backfill missed history.
 6. The discovery worker projects structurally valid candidates and their
    venue-scoped activity. HTTP supplies bounded authoritative snapshots with
    explicit truncation metadata; coalesced named `soldisco` SSE events tell the
    browser when to refresh them.
-7. Attributable malformed or unresolved-market evidence enters bounded
-   quarantine before checkpoint progress. Maintenance prunes eligible terminal
-   raw history in bounded batches, while storage-limit and network-identity
-   failures enter terminal `ERROR`.
+7. Attributable malformed or unresolved-market evidence that reaches the
+   authoritative decoder enters bounded quarantine. Maintenance prunes
+   eligible terminal raw history in bounded batches, while storage-limit and
+   network-identity failures enter terminal `ERROR`.
 
 The current projection deliberately runs in `OBSERVE_ALL` mode. Every
 structurally valid decoded Pump or PumpSwap candidate can appear as `OBSERVED`;
@@ -55,11 +63,10 @@ connected pipeline observable without pretending that the future safety gate
 exists.
 
 This local milestone also has an explicit operating boundary: the 5 GiB
-database guard is not a whole-machine free-space/WAL monitor, and durable
-market/discovery aggregates are not yet archived. Keep disk headroom available
-and do not treat unfiltered `OBSERVE_ALL` collection as an unattended,
-indefinite deployment until the bounded active-market lifecycle in the next
-milestone is implemented.
+database guard is not a whole-machine free-space/WAL monitor, observation
+windows are intentionally in-memory, and durable market/discovery aggregates
+are not yet archived. Keep disk headroom available and do not treat
+`OBSERVE_ALL` collection as an unattended, indefinite deployment.
 
 ## Workspace direction
 
@@ -70,9 +77,10 @@ milestone is implemented.
 - `crates/source-pump` — strict Pump and PumpSwap event decoding
 - `crates/source-raydium` — optional post-Pump Raydium venue resolution and
   decoding
-- `crates/solana-rpc` — provider-neutral Solana HTTP, PubSub, recovery, and
-  health behavior
-- `crates/discovery-engine` — future rolling metrics and cheap qualification
+- `crates/solana-rpc` — provider-neutral Solana HTTP, PubSub, health, and
+  reserved recovery behavior
+- `crates/discovery-engine` — bounded observation windows, rolling metrics, and
+  future cheap qualification
 - `crates/risk-engine` — deterministic evidence, rules, and scoring
 - `crates/persistence` — the only SQLx and PostgreSQL implementation boundary
 - `crates/projections` — rebuildable browser read-model boundary
@@ -80,9 +88,10 @@ milestone is implemented.
 - `docs` — product, architecture, configuration, and milestone decisions
 
 These crates compile into one server binary. Background workers are supervised
-Tokio tasks inside that process, not microservices. Their queues and signals
-are ephemeral performance tools; PostgreSQL is the durable handoff and recovery
-source. The database commit happens before downstream work or UI publication.
+Tokio tasks inside that process, not microservices. Their queues, active
+windows, and signals are ephemeral performance tools; PostgreSQL is the durable
+observation and work source. The database commit happens before downstream work
+or UI publication.
 
 Raydium remains a planned post-Pump venue-evidence layer, not a replacement for
 Pump intake and not an excuse to combine liquidity or price across unrelated
@@ -101,10 +110,11 @@ it does not synthesize data or manufacture unavailable risk and rating values.
 The remaining workspace views are UI shells for later milestones. Paper views
 have no wallet dependency; wallet controls belong only to future Live mode.
 
-Rolling-window qualification, deterministic scam/rug screening, approval and
+Window-based qualification, deterministic scam/rug screening, approval and
 rejection projections, Raydium enrichment, strategy configuration, wallet
 connections, quotes, purchases, sales, and position reconciliation are not
-implemented.
+implemented. The current observation window gathers activity only; it does not
+make a decision.
 
 ## Run locally
 
@@ -130,10 +140,13 @@ The three processes bind only to `127.0.0.1:5432`,
 `http://localhost:3000`, then use Start Stream to begin collection.
 
 The committed example uses Solana's public mainnet endpoints so initial setup
-does not require a paid provider. Public endpoints may rate-limit or restrict
-high-volume subscriptions; configure dedicated HTTP and WebSocket RPC URLs for
-sustained mainnet collection. RPC credentials belong only in the ignored local
-`.env`.
+does not require a paid provider. Discovery reads default to one globally
+paced request per second and a five-second shared cooldown after a provider
+rate-limit response; the
+rate-limited signature is still never retried. Public endpoints may also
+restrict high-volume subscriptions, so configure dedicated matching HTTP and
+WebSocket RPC URLs for sustained mainnet collection. RPC credentials belong
+only in the ignored local `.env`.
 
 The repository pins Node.js in `.nvmrc` because the frontend still uses Node.
 With `nvm` installed, run `nvm use` before installing frontend dependencies.

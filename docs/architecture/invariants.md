@@ -23,6 +23,9 @@ deployment topology.
 - Every score and decision references its source evidence, definition version,
   freshness, and calculation time.
 - Source event time and Soldisco receipt time are separate fields.
+- Live receipt time is assigned when a subscription record enters available
+  bounded collector work capacity; it is not claimed to be the provider's
+  socket-arrival timestamp under saturation.
 - Solana-derived facts carry network and chain coordinates appropriate to the
   source.
 - Token observations identify the exact market or pool when market-dependent
@@ -36,7 +39,7 @@ deployment topology.
   represented for the duration required by their explicit retention policy;
   replay must disclose evidence that has aged out.
 
-## Durability and recovery
+## Durability and collection loss
 
 - PostgreSQL is the initial durable system of record and is accessed only
   through the Rust persistence boundary.
@@ -45,17 +48,28 @@ deployment topology.
   binding, and switching networks requires a separate database.
 - An observation and its durable work state are committed before downstream
   in-process dispatch.
-- Bounded Tokio channels provide backpressure but are ephemeral and never the
-  only copy of unfinished work.
-- Live WebSocket delivery is not presumed complete. HTTP RPC recovery resumes
-  from persisted checkpoints and shares identity rules with live intake.
-- Recovery that cannot reach its durable checkpoint records a retained,
-  explicit collection gap and reports degraded health rather than implying
-  completeness.
+- Bounded Tokio channels provide backpressure but are ephemeral. Raw live
+  intake may be lost before normalization; after an observation and its
+  downstream work are committed, an in-process wake signal is never the only
+  copy of unfinished durable work.
+- Live WebSocket delivery is not presumed complete. The current `live-first`
+  mode intentionally performs no historical recovery after a disconnect or
+  restart.
+- Within one running server process, duplicate Pump/PumpSwap subscription
+  delivery shares one discovery-signature claim for the full freshness
+  horizon. Each selected signature receives at most one globally paced HTTP
+  transaction attempt. A discovery that ages out before request admission is
+  skipped without HTTP. Failure, timeout, rate limiting, or unavailability
+  skips an attempted signature rather than retrying it or restarting PubSub; a
+  provider rate-limit response can delay only later, distinct signatures.
+- A fresh direct discovery log may provision an in-memory activity window, but
+  the window and its receipt-time activity become valid only after the
+  authoritative discovery normalizes successfully. Failure cancels them.
+- Reserved exact-recovery checkpoints and collection-gap records must not be
+  reused as if they described live-first coverage. A future recovery mode must
+  be explicit and independently truthful about its bounds.
 - Attributable malformed source evidence is quarantined and never admitted as
   an `OBSERVED` candidate.
-- A handled transaction advances its checkpoint only after every attributable
-  fact has a durable observation or quarantine disposition.
 - Workers and projections are idempotent and rebuildable from durable facts.
 - Retention is explicit and versioned. It cannot make missing replay evidence
   appear complete.

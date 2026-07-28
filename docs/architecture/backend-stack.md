@@ -34,9 +34,9 @@ cloud-service or paid-service assumption.
 | Async runtime | Tokio | Supervised background tasks, bounded channels, timers, and graceful shutdown |
 | HTTP layer | Axum with Tower middleware | Commands, snapshots, health, browser-safe errors, and SSE |
 | Browser live updates | Server-Sent Events | One-way server-to-browser projection updates with reconnect behavior |
-| Persistence | Local PostgreSQL | Durable observations, checkpoints, work state, decisions, snapshots, and projections |
+| Persistence | Local PostgreSQL | Durable observations, work state, reserved checkpoints, decisions, snapshots, and projections |
 | Database access | SQLx | Parameterized Rust queries, transactions, connection pooling, and migrations |
-| Solana access | HTTP RPC plus WebSocket PubSub | Live program activity, account reads, transaction retrieval, and missed-event recovery |
+| Solana access | HTTP RPC plus WebSocket PubSub | Live program activity, account reads, and one-shot discovery transaction retrieval |
 | Serialization | Serde | Internal and browser-facing typed payloads |
 | Observability | `tracing` | Structured local logs and component health |
 
@@ -65,7 +65,10 @@ apps/
         │       └── events.rs    SSE projection stream
         └── jobs/
             ├── pipeline.rs      Supervised local pipeline composition
-            ├── collector.rs     PubSub, HTTP retrieval, and recovery
+            ├── collector.rs     PubSub and one-shot discovery HTTP retrieval
+            ├── discovery_rpc.rs Shared dedupe, pacing, and rate-limit cooldown
+            ├── intake.rs        Log prefiltering and active-window routing
+            ├── pending_activity.rs Bounded provisional-activity holding
             ├── normalization.rs Decoded events to domain observations
             ├── discovery.rs     Durable OBSERVE_ALL projection worker
             ├── maintenance.rs   Active retention and storage-size guard
@@ -79,8 +82,8 @@ crates/
 ├── api-contracts/               Serde browser DTOs and live-event shapes
 ├── source-pump/                 Strict current-IDL event decoder
 ├── source-raydium/              Verified IDs and venue-evidence contracts
-├── solana-rpc/                  HTTP, PubSub, and bounded recovery clients
-├── discovery-engine/            Unwired rolling-metric/qualification boundary
+├── solana-rpc/                  HTTP, PubSub, and reserved recovery clients
+├── discovery-engine/            Active windows, metrics, and qualification
 ├── risk-engine/                 Unwired fail-closed risk boundary
 ├── persistence/                 SQLx repositories and migrations
 └── projections/                 Rebuildable read-model contracts
@@ -144,20 +147,33 @@ ordinary HTTP. WebSockets between the browser and Soldisco are unnecessary
 until a measured two-way streaming requirement appears.
 
 The current health contract exposes database and aggregate supervised-stream
-state. More granular collector, recovery, screening, enrichment, and projection
-health remains a later contract; a future global label must not hide a failed
-component.
+state. The aggregate stream enters `DEGRADED` immediately on a provider
+rate-limit response or after three
+consecutive one-shot discovery-read failures, and returns to `RUNNING` after a
+successful read while both PubSub sources are ready. More granular collector,
+recovery, screening, enrichment, and projection health remains a later
+contract; a future global label must not hide a failed component.
 
 ## What workers and messaging are
 
 A worker is a supervised Tokio task inside `apps/server`. It is background work
 that continues without an open browser request. The implemented workers are:
 
-- Pump and PumpSwap sources maintain subscriptions with an idle watchdog,
-  retrieve transactions through bounded ordered concurrency and finite retries,
-  and attempt bounded checkpoint recovery
-- the collector processor decodes, normalizes, persists, and advances
-  checkpoints
+- Pump and PumpSwap sources maintain subscriptions with an idle watchdog and
+  prefilter fresh creation logs
+- a process-lifetime discovery-RPC gate deduplicates signatures across both
+  subscriptions for their full freshness horizon, paces request starts, bounds
+  concurrency, and applies a cooldown to later signatures after a provider
+  rate-limit response
+- provisional observation windows immediately capture matching mint/pool
+  activity directly from PubSub without HTTP, then confirm only after the
+  one-shot discovery transaction normalizes successfully
+- live notifications are timestamped and admitted up to the collector queue
+  bound independently of the smaller HTTP concurrency limit; a separate
+  bounded holding queue retains activity whose token is still provisional,
+  with a resolution deadline separate from the observation close time
+- the collector processor decodes both Pump programs, persists discoveries
+  before same-transaction activity, and confirms or cancels provisional windows
 - the discovery worker claims leased durable work and commits the
   `OBSERVE_ALL` projection
 - the maintenance worker prunes eligible terminal history in bounded batches
@@ -166,28 +182,36 @@ that continues without an open browser request. The implemented workers are:
 Screening, Raydium enrichment, and richer projection work are reserved focused
 boundaries, not active workers yet.
 
-High-volume transaction batches cross a bounded, strongly typed Tokio channel,
-so an RPC burst cannot consume unlimited memory. Small lifecycle, connection,
-and wake signals use focused Tokio synchronization primitives.
+High-volume live notification work, provisional activity, and transaction
+batches each use the configured bounded capacity, so an RPC backlog cannot
+consume unlimited memory or restrict WebSocket polling to the smaller HTTP
+concurrency limit. Small lifecycle, connection, and wake signals use focused
+Tokio synchronization primitives. “Receipt time” begins when the subscription
+record enters available collector work capacity; under full saturation,
+socket-buffered records are admitted and timestamped later, then stale
+discoveries fail closed instead of creating unbounded local intake.
 
-Channels are ephemeral. They are never the system of record and never the only
-copy of unfinished work. The reliability sequence is:
+Channels are ephemeral and are not the system of record. Raw live intake and
+provisional activity can be lost before normalization in this explicitly
+incomplete live-first mode. Once an observation and its downstream work are
+committed, the in-process wake signal is never the only copy of unfinished
+durable work. The reliability sequence is:
 
-1. fetch the authoritative transaction and strictly decode supported evidence
+1. prefilter one successful fresh discovery and fetch its authoritative
+   transaction once
 2. quarantine attributable malformed evidence without admitting a candidate
 3. commit normalized observations and durable work state in PostgreSQL
 4. wake the discovery worker through an in-process signal
 5. lease and process the work idempotently
 6. commit the rebuildable projection and complete the work lease
-7. advance the source checkpoint only after the handled transaction batch is
-   durable
-8. publish a coalesced SSE projection-change notification
+7. publish a coalesced SSE projection-change notification
 
-If the process exits between steps, restart recovery reads PostgreSQL and
-continues from the durable checkpoint. If that checkpoint is outside the
-configured recovery bound or is no longer returned by the provider, Soldisco
-records a durable gap and resumes live collection in `DEGRADED` rather than
-claiming complete history.
+If the process exits between steps, durable observations and leased work remain
+recoverable through PostgreSQL, but the live source resumes at the current head
+and open in-memory observation windows are lost. Stream stop/start and a
+supervised pipeline-attempt restart also recreate the registry. Capacity
+eviction can truncate a window without a durable completeness marker. The
+collector never claims that a live-first interval is complete.
 
 ## Pump, PumpSwap, and Raydium boundaries
 
@@ -197,15 +221,26 @@ events plus PumpSwap pool creation, buy, and sell events. Unknown discriminators
 are ignored; attributable malformed event or log evidence is quarantined.
 Neither path creates an `OBSERVED` candidate.
 
-PubSub is low-latency notification delivery, not authoritative transaction
-content. Every success or failure notification requires a matching HTTP
-transaction with the same signature, exact slot, and status before it can
-advance state. Live and recovery fetches use bounded ordered concurrency with
-finite retries, and a watchdog reconnects silent subscriptions. The collector
-then decodes attributed program-data logs and supported Anchor CPI event
-instructions with exact transaction coordinates. HTTP RPC attempts bounded
-missed-history recovery from persisted checkpoints; unrecoverable bounded
-history becomes an explicit gap.
+PubSub is the low-latency discovery and activity source. Failed notifications,
+irrelevant events, and stale creation events are discarded from their direct
+logs. During one running server process, a fresh Pump creation or PumpSwap pool
+creation can receive at most one globally deduplicated and paced HTTP
+transaction attempt with the same signature and exact slot. If it ages out
+before request admission, the collector cancels its provisional window and
+skips HTTP. If an attempted request fails, the collector also cancels that
+window and moves on. A provider rate-limit response places later distinct
+signatures into a shared cooldown but does not retry the failed signature. A
+full process restart recreates this in-memory claim set without performing
+intentional retry or backfill. Accepted discovery transactions retain full
+attributed program-data and supported Anchor CPI evidence for both Pump
+programs; matching active-window activity is decoded directly from PubSub.
+Receipt-time tokens preserve activity that arrived while HTTP or queue work was
+pending. A watchdog reconnects silent subscriptions at the current head without
+missed-history recovery.
+
+The prefilter is intentionally direct-log-only. A qualifying creation visible
+only as an Anchor event CPI instruction does not trigger an HTTP read in this
+live-first milestone.
 
 `source-raydium` is a planned optional post-Pump venue-evidence layer. For a
 candidate already known through Pump intake, it may resolve exact Raydium CPMM,
@@ -233,7 +268,8 @@ The implemented database slice stores:
 - transaction signature, optional provider transaction index, instruction,
   event, slot, and exact-market identity
 - deterministic chain-identity deduplication keys
-- collector and recovery checkpoints
+- reserved collector/recovery checkpoints that live-first intake does not
+  consume
 - malformed intake quarantine and durable collection-gap records
 - leased observation-work state
 - PumpSwap pool identity needed to resolve later events
@@ -241,8 +277,9 @@ The implemented database slice stores:
 - `OBSERVED` discovery tokens, counters, and rebuildable projection events
 
 Finality/correction relationships, rolling immutable snapshots, deterministic
-evidence and scores, candidate windows, strategy records, paper records, and
-execution records remain later milestones.
+evidence and scores, durable approved-candidate windows, strategy records,
+paper records, and execution records remain later milestones. The implemented
+short pre-decision window is in-memory.
 
 Active maintenance removes eligible terminal observation/work history,
 replaceable projection events, and quarantine records after their configured
@@ -254,8 +291,8 @@ tooling must report when requested raw evidence is no longer retained.
 Completed or migrated Pump markets retire from the active startup/live market
 registry. PumpSwap pool identities and current token/activity/trader
 projections remain durable. Structurally attributable historical facts whose
-market or quote cannot be resolved are quarantined before checkpoint advance;
-they require a future explicit replay/reprocessing path.
+market or quote cannot be resolved are quarantined; they require a future
+explicit replay/reprocessing path.
 
 Before collection starts and on each maintenance interval, Soldisco compares
 `pg_database_size` with `DATABASE_MAX_BYTES`, which defaults to 5 GiB. Reaching
@@ -268,10 +305,10 @@ other databases, Docker storage, or build caches. Operators must preserve
 machine-level headroom separately. Discovery-token, market, activity,
 checkpoint, pool, rejection-summary, and gap projections are intentionally
 retained in this milestone because later events depend on their identities.
-That means the present aggregate projection and in-memory market registry are
-not yet suitable for indefinite unfiltered mainnet collection. The next
-milestone needs a durable on-demand market lookup, a bounded active cache, and
-a versioned aggregate archive/expiry policy before continuous deployment.
+That means the present aggregate projection and in-memory window registry are
+not yet suitable for indefinite mainnet collection. The next milestone needs
+durable on-demand active-window identity and a versioned aggregate
+archive/expiry policy before continuous deployment.
 
 ## Local-only operating assumptions
 
@@ -280,12 +317,15 @@ a versioned aggregate archive/expiry policy before continuous deployment.
 - PostgreSQL binds locally at `127.0.0.1:5432`.
 - CORS allows the configured local web origin, not arbitrary sites.
 - Solana RPC endpoints are outbound dependencies of the Rust server.
-- The public Solana endpoints in `.env.example` may rate-limit or restrict
-  sustained mainnet subscriptions; dedicated configurable HTTP and WebSocket
-  endpoints are recommended for continuous operation.
+- The public Solana endpoints in `.env.example` use one paced discovery read
+  per second and a five-second shared cooldown after a provider rate-limit
+  response. They may still
+  rate-limit or restrict sustained mainnet subscriptions; dedicated
+  configurable HTTP and WebSocket endpoints are recommended for continuous
+  operation.
 - Secrets and local connection strings stay out of Git.
-- Closing the Rust process stops collection; recovery resumes from durable
-  checkpoints the next time it starts.
+- Closing the Rust process stops collection; the next start resumes at the
+  current live head without backfill.
 - No cloud deployment, managed database, Docker hosting, or uptime promise is
   part of the current milestone.
 

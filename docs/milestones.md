@@ -32,11 +32,17 @@
   start/stop HTTP routes.
 - Subscribe independently to verified Pump and PumpSwap program activity
   through WebSocket PubSub.
-- Treat every success or failure PubSub message as notification delivery only;
-  bounded ordered-concurrent HTTP RPC must corroborate its signature, exact
-  slot, and transaction status before state advances.
-- Bound authoritative fetch attempts, reconnect silent subscriptions through an
-  idle watchdog, and relaunch failed pipeline attempts with capped backoff.
+- Prefilter successful direct logs for fresh Pump creation or PumpSwap
+  pool-creation events; discard failed, stale, and irrelevant firehose traffic
+  before HTTP.
+- During one running server process, give each selected signature at most one
+  authoritative `getTransaction` attempt after cross-subscription
+  deduplication, under global request pacing and a concurrency bound shared by
+  both sources. A discovery that ages out before admission is skipped without
+  HTTP. A miss skips the attempted signature without retry or WebSocket
+  teardown; a provider rate-limit response delays only later signatures.
+- Reconnect silent subscriptions through an idle watchdog in explicit
+  live-first mode with no historical backfill.
 - Strictly decode the supported current-IDL Pump creation, trade, completion,
   and migration events and PumpSwap pool-creation, buy, and sell events.
 - Decode supported Anchor CPI events from transaction instruction data rather
@@ -45,17 +51,19 @@
   transaction index, market/quote identity, receipt time, decoder version, and
   compact exact source evidence.
 - Persist normalized observations and leased durable work before projection.
-- Deduplicate live and recovered facts using chain identity.
+- Deduplicate accepted live facts using chain identity.
 - Verify pinned HTTP genesis identity, then immutably bind each database to one
   configured Solana network before ingestion.
-- Attempt bounded missed-history recovery from monotonic PostgreSQL checkpoints
-  before live release; persist an explicit gap and resume `DEGRADED` when that
-  bound cannot reach the checkpoint.
 - Quarantine attributable malformed event or log evidence without admitting it
-  as a candidate or blocking checkpoint progress.
+  as a candidate.
 - Project every structurally valid candidate as `OBSERVED` in `OBSERVE_ALL`
-  mode, with cumulative venue-scoped trades, buy/sell counts, atomic volume,
-  and unique-trader activity.
+  mode.
+- Provision a configurable, capacity-bounded, non-extending in-memory window
+  immediately for each fresh direct discovery log; retain receipt-time
+  activity while HTTP is pending, then confirm it only after successful
+  normalization or cancel it on failure. Route confirmed Pump mint/PumpSwap
+  pool activity directly from PubSub into venue-scoped trades, buy/sell counts,
+  atomic volume, and unique-trader activity.
 - Publish coalesced named `soldisco` SSE notifications; on connection or buffer
   loss, require the browser to refresh bounded authoritative HTTP snapshots
   with explicit total/truncation metadata.
@@ -66,20 +74,21 @@
 - Keep synthetic decoder data in fixtures and tests, never in product state.
 
 This slice deliberately has no threshold, deterministic pass, approval,
-rejection, risk score, or opportunity score. Unknown discriminators are ignored
-and attributable malformed evidence is quarantined; neither becomes an observed
-candidate.
+rejection, risk score, or opportunity score. Observation windows gather inputs
+only. Unknown discriminators are ignored and attributable malformed evidence is
+quarantined; neither becomes an observed candidate.
 
 ## 4. Rolling discovery metrics and qualification — next
 
-- Maintain bounded rolling windows for trades, volume, buy/sell balance,
-  unique wallets, price movement, curve progress, and migration state.
+- Convert the current ephemeral activity window into versioned, persisted
+  feature windows for trades, volume, buy/sell balance, unique wallets, price
+  movement, curve progress, and migration state.
 - Preserve exact market and venue identity for every market-dependent value.
 - Add inexpensive, versioned qualification rules to reduce deeper RPC work.
 - Persist the inputs and result before publishing Pending, Approved, or
   Rejected projections.
-- Replace the all-markets in-memory registry with a bounded active cache backed
-  by durable on-demand identity lookup.
+- Back active-window identity with durable on-demand lookup so short process
+  interruptions do not strand a valid candidate.
 - Define versioned expiry or archival for inactive discovery, market, activity,
   pool, and rejection-summary projections without orphaning later facts.
 - Add operator-visible whole-machine free-space/WAL monitoring for unattended

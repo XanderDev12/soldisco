@@ -1,39 +1,28 @@
 use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use futures_util::{Stream, StreamExt as _, stream};
-use soldisco_domain::{ChainCoordinate, Commitment, Network, SourceProgram};
-use soldisco_persistence::{CollectionPosition, Database, NewCollectionGap, RecoveryCheckpoint};
+use soldisco_discovery_engine::{
+    ObservationWindowProvision, ObservationWindowRegistry, ObservationWindowToken,
+};
+use soldisco_domain::{Commitment, Network, SourceProgram};
 use soldisco_solana_rpc::{
-    ProgramLogNotification, ReadContext, RecoveryCheckpoint as RpcRecoveryCheckpoint,
-    RecoveryPager, RecoveryProgress, RpcError, SignatureRecord, SolanaHttpClient,
-    SolanaPubsubClient, SolanaReader, TransactionInstructionRecord, TransactionRecord,
+    ProgramLogNotification, ReadContext, RpcError, SolanaHttpClient, SolanaPubsubClient,
+    SolanaReader, TransactionInstructionRecord, TransactionRecord,
 };
 use soldisco_source_pump::PumpProgram;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-const MAX_RPC_RETRY_DELAY: Duration = Duration::from_secs(30);
-const PUMP_SWAP_RETRY_OFFSET: Duration = Duration::from_millis(250);
-const CHECKPOINT_KIND: &str = "PROGRAM_LOGS";
+use super::{
+    discovery_rpc::DiscoveryRpcGate,
+    intake::{BatchPurpose, NotificationDisposition, classify_notification},
+};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CollectorSubscription {
-    pub source_program: SourceProgram,
-    pub program_id: String,
-}
-
-/// One Anchor `Program data:` record attributed to an exact top-level
-/// transaction instruction. Event indexes are scoped to that instruction.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ScopedProgramData {
-    pub coordinate: ChainCoordinate,
-    pub log: String,
-}
+const MAX_PUBSUB_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug)]
 pub struct CollectorRuntimeConfig {
@@ -42,42 +31,44 @@ pub struct CollectorRuntimeConfig {
     pub reconnect_delay: Duration,
     pub request_timeout: Duration,
     pub rpc_max_in_flight: usize,
-    pub live_fetch_max_attempts: usize,
+    pub notification_processing_capacity: usize,
     pub subscription_idle_timeout: Duration,
-    pub recovery_page_size: usize,
-    pub recovery_max_records: usize,
+    pub maximum_discovery_age: Duration,
+    pub observation_window_duration: Duration,
 }
 
 #[derive(Clone)]
 pub struct ProgramSourceContext {
-    pub database: Database,
     pub http: Arc<SolanaHttpClient>,
     pub pubsub: SolanaPubsubClient,
     pub batches: mpsc::Sender<ProgramLogBatch>,
     pub connections: mpsc::UnboundedSender<SourceConnectionUpdate>,
+    pub discovery_rpc_health: mpsc::UnboundedSender<DiscoveryRpcHealthUpdate>,
+    pub windows: ObservationWindowRegistry,
+    pub discovery_rpc: DiscoveryRpcGate,
     pub config: CollectorRuntimeConfig,
 }
 
 #[derive(Clone, Debug)]
 pub struct ProgramLogBatch {
-    pub program: PumpProgram,
+    pub purpose: BatchPurpose,
     pub slot: u64,
     pub transaction_index: Option<u64>,
     pub signature: String,
-    /// Wall-clock time at which this source record first entered the collector,
-    /// before any authoritative HTTP fetch or retry delay.
+    /// Wall-clock time at which this source record was admitted from the
+    /// subscription into available collector work capacity, before any
+    /// authoritative HTTP fetch or discovery-RPC admission wait.
     pub received_time_unix_ms: i64,
     pub instructions: Vec<TransactionInstructionRecord>,
     pub log_messages: Vec<String>,
     pub transaction_error: Option<String>,
+    pub window_tokens: Vec<ObservationWindowToken>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SourceConnectionState {
     Connecting,
-    Recovering,
     Ready,
-    ReadyWithGap,
     Disconnected,
 }
 
@@ -87,24 +78,17 @@ pub struct SourceConnectionUpdate {
     pub state: SourceConnectionState,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiscoveryRpcHealthUpdate {
+    Failed,
+    RateLimited,
+    Successful,
+}
+
 #[derive(Debug, Error)]
 pub enum CollectorError {
-    #[error(transparent)]
-    Rpc(#[from] RpcError),
-    #[error(transparent)]
-    Persistence(#[from] soldisco_persistence::PersistenceError),
     #[error("collector processing queue is closed")]
     ProcessingQueueClosed,
-    #[error(
-        "{source_program:?} transaction {signature} remained unavailable after {attempts} attempts: {source}"
-    )]
-    LiveFetchExhausted {
-        source_program: SourceProgram,
-        signature: String,
-        attempts: usize,
-        #[source]
-        source: RpcError,
-    },
 }
 
 #[derive(Clone, Debug)]
@@ -116,199 +100,60 @@ struct ReceivedProgramLogNotification {
 #[derive(Debug)]
 enum LiveSourceExit {
     Subscription(RpcError),
-    Fetch(CollectorError),
     Ended,
 }
 
-#[derive(Clone)]
-struct LiveFetchHealth {
-    state: Arc<Mutex<LiveFetchHealthState>>,
-    connections: mpsc::UnboundedSender<SourceConnectionUpdate>,
-    source_program: SourceProgram,
-    ready_state: SourceConnectionState,
-}
-
-#[derive(Default)]
-struct LiveFetchHealthState {
-    active_retries: usize,
-    exhausted: bool,
+enum LiveNotificationOutcome {
+    Batches(Vec<ProgramLogBatch>),
+    Skipped,
+    Subscription(RpcError),
 }
 
 struct LiveProcessingContext<R> {
     http: Arc<R>,
     batches: mpsc::Sender<ProgramLogBatch>,
-    connections: mpsc::UnboundedSender<SourceConnectionUpdate>,
     cancellation: CancellationToken,
     config: CollectorRuntimeConfig,
-    ready_state: SourceConnectionState,
+    windows: ObservationWindowRegistry,
+    discovery_rpc: DiscoveryRpcGate,
+    discovery_rpc_health: mpsc::UnboundedSender<DiscoveryRpcHealthUpdate>,
 }
 
-impl LiveFetchHealth {
-    fn new(
-        connections: mpsc::UnboundedSender<SourceConnectionUpdate>,
-        source_program: SourceProgram,
-        ready_state: SourceConnectionState,
-    ) -> Self {
+struct ProvisionalWindowGuard {
+    provisions: Vec<ObservationWindowProvision>,
+    armed: bool,
+}
+
+impl ProvisionalWindowGuard {
+    fn new(provisions: Vec<ObservationWindowProvision>) -> Self {
         Self {
-            state: Arc::new(Mutex::new(LiveFetchHealthState::default())),
-            connections,
-            source_program,
-            ready_state,
+            provisions,
+            armed: true,
         }
     }
 
-    fn begin_retry(&self) -> LiveFetchRetryGuard {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        if state.active_retries == 0 {
-            send_connection(
-                &self.connections,
-                self.source_program,
-                SourceConnectionState::Recovering,
-            );
-        }
-        state.active_retries = state.active_retries.saturating_add(1);
-        drop(state);
-        LiveFetchRetryGuard {
-            health: self.clone(),
-            recovered: false,
-        }
+    fn has_new_open_token_at(&self, observed_at_unix_ms: i64) -> bool {
+        self.provisions.iter().any(|provision| {
+            provision.newly_opened && provision.token.is_open_at(observed_at_unix_ms)
+        })
+    }
+
+    fn into_new_tokens(mut self) -> Vec<ObservationWindowToken> {
+        self.armed = false;
+        std::mem::take(&mut self.provisions)
+            .into_iter()
+            .filter(|provision| provision.newly_opened)
+            .map(|provision| provision.token)
+            .collect()
     }
 }
 
-struct LiveFetchRetryGuard {
-    health: LiveFetchHealth,
-    recovered: bool,
-}
-
-impl LiveFetchRetryGuard {
-    fn recovered(mut self) {
-        self.recovered = true;
-    }
-
-    fn exhausted(&self) {
-        self.health
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .exhausted = true;
-    }
-}
-
-impl Drop for LiveFetchRetryGuard {
+impl Drop for ProvisionalWindowGuard {
     fn drop(&mut self) {
-        let mut state = self
-            .health
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        debug_assert!(
-            state.active_retries > 0,
-            "live retry guard count must not underflow"
-        );
-        state.active_retries = state.active_retries.saturating_sub(1);
-        if state.active_retries == 0 && self.recovered && !state.exhausted {
-            send_connection(
-                &self.health.connections,
-                self.health.source_program,
-                self.health.ready_state,
-            );
+        if self.armed {
+            cancel_new_provisions(&self.provisions);
         }
     }
-}
-
-#[derive(Clone, Debug, Error, Eq, PartialEq)]
-pub enum LogScopeError {
-    #[error("transaction signature cannot be empty")]
-    EmptySignature,
-    #[error("program invocation depth {depth} is inconsistent with the log stack")]
-    InvalidInvocationDepth { depth: usize },
-    #[error("top-level transaction contains more than {0} instructions")]
-    TooManyInstructions(u16),
-    #[error("one transaction instruction contains more than {0} program-data events")]
-    TooManyEvents(u16),
-}
-
-/// Walk Solana execution logs and keep data emitted only while `program_id` is
-/// the active invocation. A depth-one `invoke` is the exact top-level
-/// transaction instruction boundary; nested CPIs inherit that index.
-pub fn scope_program_data_logs(
-    program_id: &str,
-    slot: u64,
-    transaction_index: Option<u64>,
-    signature: &str,
-    logs: &[String],
-) -> Result<Vec<ScopedProgramData>, LogScopeError> {
-    if signature.trim().is_empty() {
-        return Err(LogScopeError::EmptySignature);
-    }
-
-    let mut stack: Vec<(String, u16)> = Vec::new();
-    let mut next_instruction_index = 0_u16;
-    let mut event_indexes = BTreeMap::<u16, u16>::new();
-    let mut scoped = Vec::new();
-
-    for log in logs {
-        if let Some((invoked_program, depth)) = parse_invoke(log) {
-            if depth == 0 || depth > stack.len().saturating_add(1) {
-                return Err(LogScopeError::InvalidInvocationDepth { depth });
-            }
-
-            if depth == 1 {
-                stack.clear();
-                let instruction_index = next_instruction_index;
-                next_instruction_index = next_instruction_index
-                    .checked_add(1)
-                    .ok_or(LogScopeError::TooManyInstructions(u16::MAX))?;
-                stack.push((invoked_program.to_owned(), instruction_index));
-            } else {
-                stack.truncate(depth - 1);
-                let instruction_index = stack
-                    .last()
-                    .map(|(_, instruction_index)| *instruction_index)
-                    .ok_or(LogScopeError::InvalidInvocationDepth { depth })?;
-                stack.push((invoked_program.to_owned(), instruction_index));
-            }
-            continue;
-        }
-
-        if let Some(exited_program) = parse_exit(log) {
-            if stack
-                .last()
-                .is_some_and(|(active_program, _)| active_program == exited_program)
-            {
-                stack.pop();
-            }
-            continue;
-        }
-
-        if !log.starts_with("Program data: ") {
-            continue;
-        }
-        let Some((active_program, instruction_index)) = stack.last() else {
-            continue;
-        };
-        if active_program != program_id {
-            continue;
-        }
-
-        let event_index = event_indexes.entry(*instruction_index).or_default();
-        let coordinate = ChainCoordinate {
-            slot,
-            transaction_index,
-            signature: signature.to_owned(),
-            instruction_index: *instruction_index,
-            event_index: *event_index,
-        };
-        *event_index = event_index
-            .checked_add(1)
-            .ok_or(LogScopeError::TooManyEvents(u16::MAX))?;
-        scoped.push(ScopedProgramData {
-            coordinate,
-            log: log.clone(),
-        });
-    }
-
-    Ok(scoped)
 }
 
 pub async fn run_program_source(
@@ -317,7 +162,7 @@ pub async fn run_program_source(
     cancellation: CancellationToken,
 ) -> Result<(), CollectorError> {
     let source_program = program.source_program();
-    let mut retry_delay = context.config.reconnect_delay;
+    let mut reconnect_delay = context.config.reconnect_delay;
     loop {
         if cancellation.is_cancelled() {
             return Ok(());
@@ -348,8 +193,9 @@ pub async fn run_program_source(
                     source_program,
                     SourceConnectionState::Disconnected,
                 );
-                wait_to_reconnect(&cancellation, retry_delay).await?;
-                retry_delay = next_retry_delay(retry_delay, context.config.reconnect_delay);
+                wait_to_reconnect(&cancellation, reconnect_delay).await?;
+                reconnect_delay =
+                    next_reconnect_delay(reconnect_delay, context.config.reconnect_delay);
                 continue;
             }
             Err(_) => {
@@ -362,70 +208,19 @@ pub async fn run_program_source(
                     source_program,
                     SourceConnectionState::Disconnected,
                 );
-                wait_to_reconnect(&cancellation, retry_delay).await?;
-                retry_delay = next_retry_delay(retry_delay, context.config.reconnect_delay);
+                wait_to_reconnect(&cancellation, reconnect_delay).await?;
+                reconnect_delay =
+                    next_reconnect_delay(reconnect_delay, context.config.reconnect_delay);
                 continue;
             }
         };
 
+        let connected_at = tokio::time::Instant::now();
         send_connection(
             &context.connections,
             source_program,
-            SourceConnectionState::Recovering,
+            SourceConnectionState::Ready,
         );
-        let recovery_had_gap = match recover_program(
-            program,
-            &context.database,
-            &context.http,
-            &context.batches,
-            &cancellation,
-            &context.config,
-        )
-        .await
-        {
-            Ok(()) => false,
-            Err(error) if is_unrecoverable_gap(&error) => {
-                let gap_id =
-                    record_unrecoverable_gap(program, &context.database, &context.config, &error)
-                        .await?;
-                tracing::error!(
-                    source = ?source_program,
-                    gap_id,
-                    %error,
-                    "bounded recovery could not reach the checkpoint; live collection will resume with an explicit history gap"
-                );
-                true
-            }
-            Err(error) => {
-                tracing::warn!(
-                    source = ?source_program,
-                    %error,
-                    "Solana recovery failed; reconnecting before live release"
-                );
-                send_connection(
-                    &context.connections,
-                    source_program,
-                    SourceConnectionState::Disconnected,
-                );
-                wait_to_reconnect(&cancellation, retry_delay).await?;
-                retry_delay = next_retry_delay(retry_delay, context.config.reconnect_delay);
-                continue;
-            }
-        };
-
-        retry_delay = context.config.reconnect_delay;
-        let has_active_gap = recovery_had_gap
-            || context
-                .database
-                .count_active_collection_gaps(context.config.network, source_program)
-                .await?
-                > 0;
-        let ready_state = if has_active_gap {
-            SourceConnectionState::ReadyWithGap
-        } else {
-            SourceConnectionState::Ready
-        };
-        send_connection(&context.connections, source_program, ready_state);
         let notifications =
             live_notification_stream(subscription, context.config.subscription_idle_timeout);
         let exit = process_live_notifications(
@@ -434,10 +229,11 @@ pub async fn run_program_source(
             LiveProcessingContext {
                 http: context.http.clone(),
                 batches: context.batches.clone(),
-                connections: context.connections.clone(),
                 cancellation: cancellation.clone(),
                 config: context.config.clone(),
-                ready_state,
+                windows: context.windows.clone(),
+                discovery_rpc: context.discovery_rpc.clone(),
+                discovery_rpc_health: context.discovery_rpc_health.clone(),
             },
         )
         .await?;
@@ -450,13 +246,6 @@ pub async fn run_program_source(
                     source = ?source_program,
                     %error,
                     "Solana program-log subscription disconnected"
-                );
-            }
-            LiveSourceExit::Fetch(error) => {
-                tracing::warn!(
-                    source = ?source_program,
-                    %error,
-                    "authoritative live transaction fetch was exhausted; reconnecting for recovery"
                 );
             }
             LiveSourceExit::Ended => {
@@ -472,134 +261,12 @@ pub async fn run_program_source(
             SourceConnectionState::Disconnected,
         );
 
-        wait_to_reconnect(&cancellation, retry_delay).await?;
-        retry_delay = next_retry_delay(retry_delay, context.config.reconnect_delay);
-    }
-}
-
-async fn recover_program(
-    program: PumpProgram,
-    database: &Database,
-    http: &SolanaHttpClient,
-    batches: &mpsc::Sender<ProgramLogBatch>,
-    cancellation: &CancellationToken,
-    config: &CollectorRuntimeConfig,
-) -> Result<(), CollectorError> {
-    let Some(checkpoint) = database
-        .load_recovery_checkpoint(config.network, program.source_program(), CHECKPOINT_KIND)
-        .await?
-    else {
-        // A first run begins at the already-open live subscription. The first
-        // durably processed notification establishes the checkpoint without
-        // pretending the complete historical firehose was ingested.
-        return Ok(());
-    };
-
-    let mut pager = RecoveryPager::after_checkpoint(
-        RpcRecoveryCheckpoint {
-            program_id: program.program_id().to_owned(),
-            last_slot: checkpoint.last_slot,
-            last_transaction_index: checkpoint.last_transaction_index,
-            last_signature: checkpoint.last_signature,
-        },
-        config.recovery_page_size,
-        config.recovery_max_records,
-        ReadContext {
-            commitment: config.commitment,
-            minimum_slot: None,
-        },
-    )?;
-
-    let batch = loop {
-        let page = tokio::time::timeout(
-            config.request_timeout,
-            http.signature_page(pager.next_request()?),
-        )
-        .await
-        .map_err(|_| RpcError::Timeout)??;
-        match pager.accept_page(page)? {
-            RecoveryProgress::More => {}
-            RecoveryProgress::Complete(batch) => break batch,
+        if connected_at.elapsed() >= context.config.subscription_idle_timeout {
+            reconnect_delay = context.config.reconnect_delay;
         }
-    };
-
-    let recovered = stream::iter(batch.records_oldest_first)
-        .map(|signature| fetch_recovery_record(http, program, signature, config))
-        .buffered(config.rpc_max_in_flight);
-    futures_util::pin_mut!(recovered);
-    loop {
-        let next = tokio::select! {
-            () = cancellation.cancelled() => return Ok(()),
-            next = recovered.next() => next,
-        };
-        let Some(batch) = next else {
-            break;
-        };
-        send_raw_batch(batches, batch?, cancellation).await?;
+        wait_to_reconnect(&cancellation, reconnect_delay).await?;
+        reconnect_delay = next_reconnect_delay(reconnect_delay, context.config.reconnect_delay);
     }
-
-    Ok(())
-}
-
-async fn fetch_recovery_record<R: SolanaReader + ?Sized>(
-    http: &R,
-    program: PumpProgram,
-    signature: SignatureRecord,
-    config: &CollectorRuntimeConfig,
-) -> Result<ProgramLogBatch, CollectorError> {
-    let received_time_unix_ms = unix_time_millis();
-    if !signature.succeeded() {
-        return Ok(ProgramLogBatch {
-            program,
-            slot: signature.slot,
-            transaction_index: signature.transaction_index,
-            signature: signature.signature,
-            received_time_unix_ms,
-            instructions: Vec::new(),
-            log_messages: Vec::new(),
-            transaction_error: signature.transaction_error,
-        });
-    }
-
-    let mut transaction = tokio::time::timeout(
-        config.request_timeout,
-        http.transaction(
-            &signature.signature,
-            ReadContext {
-                commitment: config.commitment,
-                minimum_slot: Some(signature.slot),
-            },
-        ),
-    )
-    .await
-    .map_err(|_| RpcError::Timeout)??
-    .ok_or_else(|| {
-        RpcError::Unavailable(format!(
-            "transaction {} disappeared during recovery",
-            signature.signature
-        ))
-    })?;
-    if transaction.slot != signature.slot {
-        return Err(RpcError::InvalidResponse(
-            "recovery transaction slot did not match its signature record".to_owned(),
-        )
-        .into());
-    }
-    match (signature.transaction_index, transaction.transaction_index) {
-        (Some(expected), Some(actual)) if expected != actual => {
-            return Err(RpcError::InvalidResponse(
-                "recovery transaction index did not match its signature record".to_owned(),
-            )
-            .into());
-        }
-        (Some(expected), None) => transaction.transaction_index = Some(expected),
-        _ => {}
-    }
-    Ok(transaction_batch(
-        program,
-        transaction,
-        received_time_unix_ms,
-    ))
 }
 
 fn live_notification_stream(
@@ -633,29 +300,33 @@ where
     R: SolanaReader + 'static,
     S: Stream<Item = Result<ReceivedProgramLogNotification, RpcError>>,
 {
-    let health = LiveFetchHealth::new(
-        context.connections.clone(),
-        program.source_program(),
-        context.ready_state,
-    );
-    let rpc_max_in_flight = context.config.rpc_max_in_flight;
+    let notification_processing_capacity = context.config.notification_processing_capacity;
     let fetches = notifications
         .map(|received| {
             let http = context.http.clone();
-            let health = health.clone();
             let config = context.config.clone();
+            let windows = context.windows.clone();
+            let discovery_rpc = context.discovery_rpc.clone();
+            let discovery_rpc_health = context.discovery_rpc_health.clone();
             async move {
                 match received {
                     Ok(received) => {
-                        fetch_live_batch(http.as_ref(), program, received, &config, Some(&health))
-                            .await
-                            .map_err(LiveSourceExit::Fetch)
+                        collect_live_notification(
+                            http.as_ref(),
+                            program,
+                            received,
+                            &config,
+                            &windows,
+                            &discovery_rpc,
+                            &discovery_rpc_health,
+                        )
+                        .await
                     }
-                    Err(error) => Err(LiveSourceExit::Subscription(error)),
+                    Err(error) => LiveNotificationOutcome::Subscription(error),
                 }
             }
         })
-        .buffered(rpc_max_in_flight);
+        .buffer_unordered(notification_processing_capacity);
     futures_util::pin_mut!(fetches);
 
     loop {
@@ -664,137 +335,242 @@ where
             fetched = fetches.next() => fetched,
         };
         match fetched {
-            Some(Ok(batch)) => {
-                send_raw_batch(&context.batches, batch, &context.cancellation).await?
+            Some(LiveNotificationOutcome::Batches(batches)) => {
+                for batch in batches {
+                    send_raw_batch(&context.batches, batch, &context.cancellation).await?;
+                }
             }
-            Some(Err(exit)) => return Ok(exit),
+            Some(LiveNotificationOutcome::Skipped) => {}
+            Some(LiveNotificationOutcome::Subscription(error)) => {
+                return Ok(LiveSourceExit::Subscription(error));
+            }
             None => return Ok(LiveSourceExit::Ended),
         }
     }
 }
 
-async fn fetch_live_batch<R: SolanaReader + ?Sized>(
+async fn collect_live_notification<R: SolanaReader + ?Sized>(
     http: &R,
-    program: PumpProgram,
+    subscription_program: PumpProgram,
     received: ReceivedProgramLogNotification,
     config: &CollectorRuntimeConfig,
-    health: Option<&LiveFetchHealth>,
-) -> Result<ProgramLogBatch, CollectorError> {
-    let notification = received.notification;
-
-    let mut retry_delay = config.reconnect_delay;
-    let mut last_error = None;
-    let mut retry_guard: Option<LiveFetchRetryGuard> = None;
-    for attempt in 1..=config.live_fetch_max_attempts {
-        let result = tokio::time::timeout(
-            config.request_timeout,
-            http.transaction(
-                &notification.signature,
-                ReadContext {
-                    commitment: config.commitment,
-                    minimum_slot: Some(notification.slot),
-                },
-            ),
-        )
-        .await;
-        match result {
-            Ok(Ok(Some(transaction))) => {
-                let validation_error = if transaction.slot != notification.slot {
-                    Some(RpcError::InvalidResponse(
-                        "live transaction slot did not match its WebSocket notification".to_owned(),
-                    ))
-                } else if transaction.succeeded() != notification.succeeded() {
-                    Some(RpcError::InvalidResponse(
-                        "live transaction status did not match its WebSocket notification"
-                            .to_owned(),
-                    ))
-                } else {
-                    None
-                };
-                if let Some(error) = validation_error {
-                    tracing::warn!(
-                        source = ?program.source_program(),
-                        signature = %notification.signature,
-                        attempt,
-                        %error,
-                        "authoritative transaction did not match its WebSocket notification"
-                    );
-                    last_error = Some(error);
-                } else {
-                    if let Some(guard) = retry_guard.take() {
-                        guard.recovered();
-                    }
-                    return Ok(transaction_batch(
-                        program,
-                        transaction,
-                        received.received_time_unix_ms,
-                    ));
-                }
-            }
-            Ok(Ok(None)) => {
-                last_error = Some(RpcError::Unavailable(
-                    "notified transaction was not yet available".to_owned(),
-                ));
-                tracing::debug!(
-                    source = ?program.source_program(),
-                    signature = %notification.signature,
-                    attempt,
-                    "notified transaction is not yet available from HTTP RPC"
-                );
-            }
-            Ok(Err(error)) => {
-                tracing::warn!(
-                    source = ?program.source_program(),
-                    signature = %notification.signature,
-                    attempt,
-                    %error,
-                    "authoritative transaction fetch failed"
-                );
-                last_error = Some(error);
-            }
-            Err(_) => {
-                tracing::warn!(
-                    source = ?program.source_program(),
-                    signature = %notification.signature,
-                    attempt,
-                    "authoritative transaction fetch timed out"
-                );
-                last_error = Some(RpcError::Timeout);
-            }
+    windows: &ObservationWindowRegistry,
+    discovery_rpc: &DiscoveryRpcGate,
+    discovery_rpc_health: &mpsc::UnboundedSender<DiscoveryRpcHealthUpdate>,
+) -> LiveNotificationOutcome {
+    let disposition = classify_notification(
+        &received.notification,
+        windows,
+        config.maximum_discovery_age,
+        received.received_time_unix_ms,
+        unix_time_millis(),
+    );
+    let (discovery_seeds, tracked_windows) = match disposition {
+        NotificationDisposition::Drop(reason) => {
+            tracing::trace!(
+                source = ?subscription_program.source_program(),
+                signature = %received.notification.signature,
+                ?reason,
+                "discarded live program notification before HTTP"
+            );
+            return LiveNotificationOutcome::Skipped;
         }
+        NotificationDisposition::CollectTrackedActivity(window_tokens) => {
+            return LiveNotificationOutcome::Batches(vec![notification_batch(
+                received,
+                BatchPurpose::TrackedActivity,
+                window_tokens,
+            )]);
+        }
+        NotificationDisposition::FetchDiscovery {
+            seeds,
+            tracked_windows,
+        } => (seeds, tracked_windows),
+    };
 
-        if attempt < config.live_fetch_max_attempts {
-            if retry_guard.is_none() {
-                retry_guard = health.map(LiveFetchHealth::begin_retry);
-            }
-            let staggered_delay = if program == PumpProgram::PumpSwap {
-                retry_delay.saturating_add(PUMP_SWAP_RETRY_OFFSET)
+    if !discovery_rpc.claim_signature(&received.notification.signature) {
+        return tracked_activity_or_skip(received, tracked_windows);
+    }
+
+    let admission_timeout = discovery_admission_timeout(
+        &discovery_seeds,
+        config.maximum_discovery_age,
+        received.received_time_unix_ms,
+        unix_time_millis(),
+    );
+    let guard = ProvisionalWindowGuard::new(
+        discovery_seeds
+            .into_iter()
+            .map(|seed| {
+                windows.provision_target(
+                    seed.target,
+                    seed.mint,
+                    received.received_time_unix_ms,
+                    config.observation_window_duration,
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
+
+    let Some(admission_timeout) = admission_timeout else {
+        return tracked_activity_or_skip(received, tracked_windows);
+    };
+    if !guard.has_new_open_token_at(received.received_time_unix_ms) {
+        return tracked_activity_or_skip(received, tracked_windows);
+    }
+    let Ok(Ok(_permit)) = tokio::time::timeout(admission_timeout, discovery_rpc.acquire()).await
+    else {
+        return tracked_activity_or_skip(received, tracked_windows);
+    };
+    let disposition = classify_notification(
+        &received.notification,
+        windows,
+        config.maximum_discovery_age,
+        received.received_time_unix_ms,
+        unix_time_millis(),
+    );
+    if !matches!(disposition, NotificationDisposition::FetchDiscovery { .. })
+        || !guard.has_new_open_token_at(received.received_time_unix_ms)
+    {
+        return tracked_activity_or_skip(received, tracked_windows);
+    }
+
+    let notification = &received.notification;
+    let result = tokio::time::timeout(
+        config.request_timeout,
+        http.transaction(
+            &notification.signature,
+            ReadContext {
+                commitment: config.commitment,
+                minimum_slot: Some(notification.slot),
+            },
+        ),
+    )
+    .await;
+    let transaction = match result {
+        Ok(Ok(Some(transaction))) => transaction,
+        Ok(Ok(None)) => {
+            let _ = discovery_rpc_health.send(DiscoveryRpcHealthUpdate::Failed);
+            tracing::debug!(
+                source = ?subscription_program.source_program(),
+                signature = %notification.signature,
+                "one-shot discovery transaction was unavailable; skipping"
+            );
+            return tracked_activity_or_skip(received, tracked_windows);
+        }
+        Ok(Err(error)) => {
+            if matches!(error, RpcError::RateLimited) {
+                discovery_rpc.record_rate_limit().await;
+                let _ = discovery_rpc_health.send(DiscoveryRpcHealthUpdate::RateLimited);
+                tracing::warn!(
+                    source = ?subscription_program.source_program(),
+                    signature = %notification.signature,
+                    cooldown_ms = discovery_rpc.rate_limit_cooldown().as_millis(),
+                    "one-shot discovery transaction was rate limited; skipping this signature"
+                );
             } else {
-                retry_delay
-            };
-            tokio::time::sleep(staggered_delay).await;
-            retry_delay = next_retry_delay(retry_delay, config.reconnect_delay);
+                let _ = discovery_rpc_health.send(DiscoveryRpcHealthUpdate::Failed);
+                tracing::debug!(
+                    source = ?subscription_program.source_program(),
+                    signature = %notification.signature,
+                    %error,
+                    "one-shot discovery transaction fetch failed; skipping"
+                );
+            }
+            return tracked_activity_or_skip(received, tracked_windows);
         }
-    }
+        Err(_) => {
+            let _ = discovery_rpc_health.send(DiscoveryRpcHealthUpdate::Failed);
+            tracing::debug!(
+                source = ?subscription_program.source_program(),
+                signature = %notification.signature,
+                "one-shot discovery transaction fetch timed out; skipping"
+            );
+            return tracked_activity_or_skip(received, tracked_windows);
+        }
+    };
 
-    if let Some(guard) = retry_guard.as_ref() {
-        guard.exhausted();
+    if transaction.slot != notification.slot
+        || transaction.signature != notification.signature
+        || !transaction.succeeded()
+    {
+        let _ = discovery_rpc_health.send(DiscoveryRpcHealthUpdate::Failed);
+        tracing::warn!(
+            source = ?subscription_program.source_program(),
+            signature = %notification.signature,
+            "one-shot discovery transaction did not match its successful WebSocket notification; skipping"
+        );
+        return tracked_activity_or_skip(received, tracked_windows);
     }
-    Err(CollectorError::LiveFetchExhausted {
-        source_program: program.source_program(),
-        signature: notification.signature,
-        attempts: config.live_fetch_max_attempts,
-        source: last_error.expect("one or more live fetch attempts always record an error"),
-    })
+    let _ = discovery_rpc_health.send(DiscoveryRpcHealthUpdate::Successful);
+    let discovery_tokens = guard.into_new_tokens();
+    let mut batches = vec![transaction_batch(
+        transaction.clone(),
+        received.received_time_unix_ms,
+        BatchPurpose::Discovery,
+        discovery_tokens,
+    )];
+    if !tracked_windows.is_empty() {
+        batches.push(transaction_batch(
+            transaction,
+            received.received_time_unix_ms,
+            BatchPurpose::TrackedActivity,
+            tracked_windows,
+        ));
+    }
+    LiveNotificationOutcome::Batches(batches)
+}
+
+fn discovery_admission_timeout(
+    seeds: &[super::intake::DiscoverySeed],
+    maximum_discovery_age: Duration,
+    received_time_unix_ms: i64,
+    now_unix_ms: i64,
+) -> Option<Duration> {
+    let maximum_age_ms = i64::try_from(maximum_discovery_age.as_millis()).unwrap_or(i64::MAX);
+    let source_deadline_unix_ms = seeds
+        .iter()
+        .map(|seed| {
+            seed.source_event_time_unix_ms
+                .saturating_add(maximum_age_ms)
+        })
+        .max()?;
+    let receipt_deadline_unix_ms = received_time_unix_ms.saturating_add(maximum_age_ms);
+    let deadline_unix_ms = source_deadline_unix_ms.min(receipt_deadline_unix_ms);
+    let remaining_ms = deadline_unix_ms.checked_sub(now_unix_ms)?;
+    let remaining_ms = u64::try_from(remaining_ms).ok()?;
+    (remaining_ms > 0).then(|| Duration::from_millis(remaining_ms))
+}
+
+fn tracked_activity_or_skip(
+    received: ReceivedProgramLogNotification,
+    window_tokens: Vec<ObservationWindowToken>,
+) -> LiveNotificationOutcome {
+    if window_tokens.is_empty() {
+        LiveNotificationOutcome::Skipped
+    } else {
+        LiveNotificationOutcome::Batches(vec![notification_batch(
+            received,
+            BatchPurpose::TrackedActivity,
+            window_tokens,
+        )])
+    }
+}
+
+fn cancel_new_provisions(provisions: &[ObservationWindowProvision]) {
+    for provision in provisions.iter().filter(|provision| provision.newly_opened) {
+        provision.token.cancel_if_pending();
+    }
 }
 
 fn transaction_batch(
-    program: PumpProgram,
     transaction: TransactionRecord,
     received_time_unix_ms: i64,
+    purpose: BatchPurpose,
+    window_tokens: Vec<ObservationWindowToken>,
 ) -> ProgramLogBatch {
     ProgramLogBatch {
-        program,
+        purpose,
         slot: transaction.slot,
         transaction_index: transaction.transaction_index,
         signature: transaction.signature,
@@ -802,6 +578,25 @@ fn transaction_batch(
         instructions: transaction.instructions,
         log_messages: transaction.log_messages,
         transaction_error: transaction.transaction_error,
+        window_tokens,
+    }
+}
+
+fn notification_batch(
+    received: ReceivedProgramLogNotification,
+    purpose: BatchPurpose,
+    window_tokens: Vec<ObservationWindowToken>,
+) -> ProgramLogBatch {
+    ProgramLogBatch {
+        purpose,
+        slot: received.notification.slot,
+        transaction_index: None,
+        signature: received.notification.signature,
+        received_time_unix_ms: received.received_time_unix_ms,
+        instructions: Vec::new(),
+        log_messages: received.notification.log_messages,
+        transaction_error: received.notification.transaction_error,
+        window_tokens,
     }
 }
 
@@ -837,68 +632,10 @@ async fn wait_to_reconnect(
     }
 }
 
-async fn record_unrecoverable_gap(
-    program: PumpProgram,
-    database: &Database,
-    config: &CollectorRuntimeConfig,
-    error: &CollectorError,
-) -> Result<i64, CollectorError> {
-    let source_program = program.source_program();
-    let checkpoint = database
-        .load_recovery_checkpoint(config.network, source_program, CHECKPOINT_KIND)
-        .await?
-        .ok_or_else(|| {
-            RpcError::RecoveryProtocol(
-                "recovery reported a history gap without a durable checkpoint".to_owned(),
-            )
-        })?;
-    let reason_code = match error {
-        CollectorError::Rpc(RpcError::RecoveryCheckpointNotFound { .. }) => {
-            "RECOVERY_CHECKPOINT_NOT_FOUND"
-        }
-        CollectorError::Rpc(RpcError::RecoveryLimitExceeded { .. }) => "RECOVERY_LIMIT_EXCEEDED",
-        _ => {
-            return Err(RpcError::RecoveryProtocol(
-                "attempted to record a non-gap collector error as a history gap".to_owned(),
-            )
-            .into());
-        }
-    };
-
-    database
-        .record_collection_gap(&NewCollectionGap {
-            network: config.network,
-            source_program,
-            reason_code: reason_code.to_owned(),
-            prior_checkpoint: checkpoint_position(checkpoint),
-            detected_at_unix_ms: unix_time_millis(),
-            details: format!("bounded recovery could not release a complete batch: {error}"),
-        })
-        .await
-        .map_err(CollectorError::from)
-}
-
-fn checkpoint_position(checkpoint: RecoveryCheckpoint) -> CollectionPosition {
-    CollectionPosition {
-        slot: checkpoint.last_slot,
-        transaction_index: checkpoint.last_transaction_index,
-        signature: checkpoint.last_signature,
-    }
-}
-
-fn is_unrecoverable_gap(error: &CollectorError) -> bool {
-    matches!(
-        error,
-        CollectorError::Rpc(
-            RpcError::RecoveryCheckpointNotFound { .. } | RpcError::RecoveryLimitExceeded { .. }
-        )
-    )
-}
-
-fn next_retry_delay(current: Duration, configured_minimum: Duration) -> Duration {
+fn next_reconnect_delay(current: Duration, configured_minimum: Duration) -> Duration {
     current
         .saturating_mul(2)
-        .min(MAX_RPC_RETRY_DELAY.max(configured_minimum))
+        .min(MAX_PUBSUB_RECONNECT_DELAY.max(configured_minimum))
 }
 
 fn unix_time_millis() -> i64 {
@@ -907,22 +644,6 @@ fn unix_time_millis() -> i64 {
         .unwrap_or_default()
         .as_millis();
     i64::try_from(milliseconds).unwrap_or(i64::MAX)
-}
-
-fn parse_invoke(log: &str) -> Option<(&str, usize)> {
-    let suffix = log.strip_prefix("Program ")?;
-    let (program_id, depth) = suffix.split_once(" invoke [")?;
-    let depth = depth.strip_suffix(']')?.parse().ok()?;
-    Some((program_id, depth))
-}
-
-fn parse_exit(log: &str) -> Option<&str> {
-    let suffix = log.strip_prefix("Program ")?;
-    suffix.strip_suffix(" success").or_else(|| {
-        suffix
-            .split_once(" failed:")
-            .map(|(program_id, _)| program_id)
-    })
 }
 
 #[cfg(test)]
@@ -936,106 +657,43 @@ mod tests {
         time::Duration,
     };
 
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
     use futures_util::stream;
-    use soldisco_domain::{Commitment, Network};
+    use soldisco_discovery_engine::{ObservationWindowRegistry, ObservationWindowStatus};
+    use soldisco_domain::{ChainCoordinate, Commitment, Network};
     use soldisco_solana_rpc::{
         AccountRecord, ProgramLogNotification, ReadContext, RpcError, RpcHealth, SignaturePage,
         SignaturePageRequest, SolanaReader, TransactionRecord,
     };
-    use soldisco_source_pump::PumpProgram;
+    use soldisco_source_pump::{
+        COMPLETE_EVENT_DISCRIMINATOR, CREATE_EVENT_DISCRIMINATOR, PUMP_PROGRAM_ID, PumpProgram,
+        decode_anchor_event,
+    };
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
     use super::{
-        CollectorError, CollectorRuntimeConfig, LiveFetchHealth, LiveProcessingContext,
-        LiveSourceExit, LogScopeError, ReceivedProgramLogNotification, SourceConnectionState,
-        fetch_live_batch, next_retry_delay, process_live_notifications, scope_program_data_logs,
+        CollectorRuntimeConfig, LiveNotificationOutcome, LiveProcessingContext, LiveSourceExit,
+        ReceivedProgramLogNotification, collect_live_notification, next_reconnect_delay,
+        process_live_notifications,
+    };
+    use crate::jobs::{
+        discovery_rpc::DiscoveryRpcGate,
+        intake::{BatchPurpose, discovery_seed, event_tracking_target},
     };
 
-    const PUMP: &str = "pump";
-    const OTHER: &str = "other";
-
     #[test]
-    fn scopes_nested_events_to_their_top_level_instruction() {
-        let logs = vec![
-            format!("Program {OTHER} invoke [1]"),
-            format!("Program {PUMP} invoke [2]"),
-            "Program data: first".to_owned(),
-            format!("Program {PUMP} success"),
-            format!("Program {OTHER} success"),
-            format!("Program {PUMP} invoke [1]"),
-            "Program data: second".to_owned(),
-            "Program data: third".to_owned(),
-            format!("Program {PUMP} success"),
-        ];
-
-        let scoped = scope_program_data_logs(PUMP, 42, None, "signature", &logs)
-            .expect("valid execution logs");
-
-        assert_eq!(scoped.len(), 3);
-        assert_eq!(scoped[0].coordinate.instruction_index, 0);
-        assert_eq!(scoped[0].coordinate.event_index, 0);
-        assert_eq!(scoped[1].coordinate.instruction_index, 1);
-        assert_eq!(scoped[1].coordinate.event_index, 0);
-        assert_eq!(scoped[2].coordinate.instruction_index, 1);
-        assert_eq!(scoped[2].coordinate.event_index, 1);
-    }
-
-    #[test]
-    fn source_transaction_index_is_preserved_in_scoped_coordinates() {
-        let logs = vec![
-            format!("Program {PUMP} invoke [1]"),
-            "Program data: first".to_owned(),
-            format!("Program {PUMP} success"),
-        ];
-
-        let scoped = scope_program_data_logs(PUMP, 42, Some(9), "signature", &logs)
-            .expect("valid execution logs");
-
-        assert_eq!(scoped[0].coordinate.transaction_index, Some(9));
-    }
-
-    #[test]
-    fn ignores_program_data_from_other_programs() {
-        let logs = vec![
-            format!("Program {OTHER} invoke [1]"),
-            "Program data: unrelated".to_owned(),
-            format!("Program {OTHER} success"),
-        ];
-
-        assert!(
-            scope_program_data_logs(PUMP, 1, None, "signature", &logs)
-                .expect("valid logs")
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn rejects_impossible_invocation_depth() {
-        let error = scope_program_data_logs(
-            PUMP,
-            1,
-            None,
-            "signature",
-            &[format!("Program {PUMP} invoke [2]")],
-        )
-        .expect_err("depth two requires a parent");
-
-        assert_eq!(error, LogScopeError::InvalidInvocationDepth { depth: 2 });
-    }
-
-    #[test]
-    fn rpc_retry_backoff_is_bounded() {
+    fn pubsub_reconnect_backoff_is_bounded() {
         assert_eq!(
-            next_retry_delay(Duration::from_secs(1), Duration::from_secs(1)),
+            next_reconnect_delay(Duration::from_secs(1), Duration::from_secs(1)),
             Duration::from_secs(2)
         );
         assert_eq!(
-            next_retry_delay(Duration::from_secs(20), Duration::from_secs(1)),
+            next_reconnect_delay(Duration::from_secs(20), Duration::from_secs(1)),
             Duration::from_secs(30)
         );
         assert_eq!(
-            next_retry_delay(Duration::from_secs(40), Duration::from_secs(40)),
+            next_reconnect_delay(Duration::from_secs(40), Duration::from_secs(40)),
             Duration::from_secs(40)
         );
     }
@@ -1081,7 +739,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(delay)).await;
             self.active.fetch_sub(1, Ordering::SeqCst);
 
-            if (signature == "retry" && attempt < 3) || signature == "missing" {
+            if signature == "missing" {
                 return Ok(None);
             }
             Ok(Some(TransactionRecord {
@@ -1122,44 +780,128 @@ mod tests {
             reconnect_delay: Duration::from_millis(1),
             request_timeout: Duration::from_secs(1),
             rpc_max_in_flight: 3,
-            live_fetch_max_attempts: 3,
+            notification_processing_capacity: 32,
             subscription_idle_timeout: Duration::from_secs(30),
-            recovery_page_size: 100,
-            recovery_max_records: 5_000,
+            maximum_discovery_age: Duration::from_secs(30),
+            observation_window_duration: Duration::from_secs(5),
         }
     }
 
+    fn discovery_rpc(maximum_in_flight: usize) -> DiscoveryRpcGate {
+        DiscoveryRpcGate::new(
+            maximum_in_flight,
+            1_000,
+            Duration::from_millis(10),
+            Duration::from_secs(30),
+        )
+    }
+
+    fn push_string(bytes: &mut Vec<u8>, value: &str) {
+        bytes.extend(
+            u32::try_from(value.len())
+                .expect("fixture string fits in u32")
+                .to_le_bytes(),
+        );
+        bytes.extend(value.as_bytes());
+    }
+
+    fn push_pubkey(bytes: &mut Vec<u8>, marker: u8) {
+        bytes.extend([marker; 32]);
+    }
+
+    fn create_event(timestamp: i64) -> Vec<u8> {
+        create_event_for_mint(timestamp, 1)
+    }
+
+    fn create_event_for_mint(timestamp: i64, mint_marker: u8) -> Vec<u8> {
+        let mut bytes = CREATE_EVENT_DISCRIMINATOR.to_vec();
+        push_string(&mut bytes, "Fixture Coin");
+        push_string(&mut bytes, "FIX");
+        push_string(&mut bytes, "https://example.invalid/fixture.json");
+        for marker in [mint_marker, 2, 3, 4] {
+            push_pubkey(&mut bytes, marker);
+        }
+        bytes.extend(timestamp.to_le_bytes());
+        for value in 1_u64..=4 {
+            bytes.extend((value * 1_000).to_le_bytes());
+        }
+        push_pubkey(&mut bytes, 5);
+        bytes.push(0);
+        bytes.push(0);
+        push_pubkey(&mut bytes, 6);
+        bytes.extend(5_000_u64.to_le_bytes());
+        bytes
+    }
+
+    fn complete_event(timestamp: i64, mint_marker: u8) -> Vec<u8> {
+        let mut bytes = COMPLETE_EVENT_DISCRIMINATOR.to_vec();
+        push_pubkey(&mut bytes, 8);
+        push_pubkey(&mut bytes, mint_marker);
+        push_pubkey(&mut bytes, 7);
+        bytes.extend(timestamp.to_le_bytes());
+        push_pubkey(&mut bytes, 6);
+        bytes
+    }
+
     fn received(signature: &str, received_time_unix_ms: i64) -> ReceivedProgramLogNotification {
+        received_with_event(
+            signature,
+            received_time_unix_ms,
+            create_event_for_mint(
+                super::unix_time_millis() / 1_000,
+                signature.bytes().next().unwrap_or(1),
+            ),
+        )
+    }
+
+    fn received_with_event(
+        signature: &str,
+        received_time_unix_ms: i64,
+        event: Vec<u8>,
+    ) -> ReceivedProgramLogNotification {
+        received_with_events(signature, received_time_unix_ms, &[event])
+    }
+
+    fn received_with_events(
+        signature: &str,
+        received_time_unix_ms: i64,
+        events: &[Vec<u8>],
+    ) -> ReceivedProgramLogNotification {
+        let mut log_messages = vec![format!("Program {PUMP_PROGRAM_ID} invoke [1]")];
+        log_messages.extend(
+            events
+                .iter()
+                .map(|event| format!("Program data: {}", STANDARD.encode(event))),
+        );
+        log_messages.push(format!("Program {PUMP_PROGRAM_ID} success"));
         ReceivedProgramLogNotification {
             notification: ProgramLogNotification {
                 subscription_id: 1,
                 slot: 42,
                 signature: signature.to_owned(),
-                log_messages: Vec::new(),
+                log_messages,
                 transaction_error: None,
             },
             received_time_unix_ms,
         }
     }
 
-    fn failed_received(
-        signature: &str,
-        received_time_unix_ms: i64,
-    ) -> ReceivedProgramLogNotification {
+    fn failed_received(signature: &str) -> ReceivedProgramLogNotification {
+        let received_time_unix_ms = super::unix_time_millis();
         let mut received = received(signature, received_time_unix_ms);
         received.notification.transaction_error = Some("{}".to_owned());
         received
     }
 
     #[tokio::test]
-    async fn live_fetches_are_concurrent_but_batches_remain_in_notification_order() {
+    async fn live_reader_continues_while_discovery_fetches_are_slow() {
         let reader = Arc::new(FakeReader::default());
         let (sender, mut receiver) = mpsc::channel(3);
-        let (connections, _connection_receiver) = mpsc::unbounded_channel();
+        let now = super::unix_time_millis();
         let notifications = stream::iter([
-            Ok(received("slow", 10)),
-            Ok(received("fast", 11)),
-            Ok(received("third", 12)),
+            Ok(received("slow", now)),
+            Ok(received("fast", now)),
+            Ok(received("third", now)),
         ]);
 
         let exit = process_live_notifications(
@@ -1168,10 +910,11 @@ mod tests {
             LiveProcessingContext {
                 http: reader.clone(),
                 batches: sender,
-                connections,
                 cancellation: CancellationToken::new(),
                 config: runtime_config(),
-                ready_state: SourceConnectionState::Ready,
+                windows: ObservationWindowRegistry::new(8),
+                discovery_rpc: discovery_rpc(3),
+                discovery_rpc_health: mpsc::unbounded_channel().0,
             },
         )
         .await
@@ -1182,111 +925,423 @@ mod tests {
             reader.maximum_active.load(Ordering::SeqCst) >= 2,
             "more than one authoritative fetch should run at once"
         );
-        let batches = [
+        let mut batches = [
             receiver.recv().await.expect("slow batch"),
             receiver.recv().await.expect("fast batch"),
             receiver.recv().await.expect("third batch"),
         ];
+        assert_ne!(
+            batches[0].signature, "slow",
+            "a slow discovery fetch must not block later notification work"
+        );
+        batches.sort_by(|left, right| left.signature.cmp(&right.signature));
         assert_eq!(
-            batches.map(|batch| batch.signature),
-            ["slow", "fast", "third"]
+            batches
+                .iter()
+                .map(|batch| batch.signature.as_str())
+                .collect::<Vec<_>>(),
+            ["fast", "slow", "third"]
+        );
+        assert!(
+            batches
+                .iter()
+                .all(|batch| batch.purpose == super::BatchPurpose::Discovery)
         );
     }
 
     #[tokio::test]
-    async fn live_fetch_retry_is_finite_and_preserves_source_receipt_time() {
-        let reader = FakeReader::default();
-        let (connections, mut connection_updates) = mpsc::unbounded_channel();
-        let health = LiveFetchHealth::new(
-            connections,
-            PumpProgram::Pump.source_program(),
-            SourceConnectionState::Ready,
-        );
-        let batch = fetch_live_batch(
-            &reader,
+    async fn unavailable_discovery_is_attempted_once_and_the_stream_continues() {
+        let reader = Arc::new(FakeReader::default());
+        let (sender, mut receiver) = mpsc::channel(2);
+        let now = super::unix_time_millis();
+        let notifications =
+            stream::iter([Ok(received("missing", now)), Ok(received("available", now))]);
+
+        let exit = process_live_notifications(
             PumpProgram::Pump,
-            received("retry", 123_456),
-            &runtime_config(),
-            Some(&health),
+            notifications,
+            LiveProcessingContext {
+                http: reader.clone(),
+                batches: sender,
+                cancellation: CancellationToken::new(),
+                config: runtime_config(),
+                windows: ObservationWindowRegistry::new(8),
+                discovery_rpc: discovery_rpc(2),
+                discovery_rpc_health: mpsc::unbounded_channel().0,
+            },
         )
         .await
-        .expect("third attempt should succeed");
+        .expect("one failed transaction must not end the stream");
 
-        assert_eq!(reader.attempts("retry"), 3);
-        assert_eq!(batch.received_time_unix_ms, 123_456);
+        assert!(matches!(exit, LiveSourceExit::Ended));
+        assert_eq!(reader.attempts("missing"), 1);
+        assert_eq!(reader.attempts("available"), 1);
         assert_eq!(
-            connection_updates
-                .recv()
-                .await
-                .expect("retrying status")
-                .state,
-            SourceConnectionState::Recovering
+            receiver.recv().await.expect("available batch").signature,
+            "available"
         );
-        assert_eq!(
-            connection_updates
-                .recv()
-                .await
-                .expect("recovered status")
-                .state,
-            SourceConnectionState::Ready
-        );
+        assert!(receiver.try_recv().is_err());
+    }
 
-        let mut config = runtime_config();
-        config.live_fetch_max_attempts = 2;
-        let error = fetch_live_batch(
+    #[tokio::test]
+    async fn failed_websocket_notifications_are_dropped_without_http() {
+        let reader = FakeReader::default();
+        let outcome = collect_live_notification(
             &reader,
             PumpProgram::Pump,
-            received("missing", 123_456),
+            failed_received("failed"),
+            &runtime_config(),
+            &ObservationWindowRegistry::new(8),
+            &discovery_rpc(1),
+            &mpsc::unbounded_channel().0,
+        )
+        .await;
+
+        assert!(matches!(outcome, LiveNotificationOutcome::Skipped));
+        assert_eq!(reader.attempts("failed"), 0);
+    }
+
+    #[tokio::test]
+    async fn stale_and_irrelevant_notifications_never_use_http() {
+        let reader = FakeReader::default();
+        let config = runtime_config();
+        let windows = ObservationWindowRegistry::new(8);
+        let discovery_rpc = discovery_rpc(1);
+        let (health, _health_receiver) = mpsc::unbounded_channel();
+        let now = super::unix_time_millis();
+        let stale =
+            received_with_event("stale", now, create_event((now / 1_000).saturating_sub(60)));
+        let irrelevant = ReceivedProgramLogNotification {
+            notification: ProgramLogNotification {
+                subscription_id: 1,
+                slot: 42,
+                signature: "irrelevant".to_owned(),
+                log_messages: vec![format!("Program {PUMP_PROGRAM_ID} invoke [1]")],
+                transaction_error: None,
+            },
+            received_time_unix_ms: now,
+        };
+
+        let stale = collect_live_notification(
+            &reader,
+            PumpProgram::Pump,
+            stale,
             &config,
-            None,
+            &windows,
+            &discovery_rpc,
+            &health,
         )
-        .await
-        .expect_err("missing transaction must exhaust its finite budget");
-
-        assert!(matches!(
-            error,
-            CollectorError::LiveFetchExhausted { attempts: 2, .. }
-        ));
-        assert_eq!(reader.attempts("missing"), 2);
-    }
-
-    #[tokio::test]
-    async fn failed_websocket_notifications_are_still_verified_over_http() {
-        let reader = FakeReader::default();
-        let batch = fetch_live_batch(
+        .await;
+        let irrelevant = collect_live_notification(
             &reader,
             PumpProgram::Pump,
-            failed_received("failed", 123_456),
-            &runtime_config(),
-            None,
+            irrelevant,
+            &config,
+            &windows,
+            &discovery_rpc,
+            &health,
         )
-        .await
-        .expect("matching authoritative failed transaction");
+        .await;
 
-        assert_eq!(reader.attempts("failed"), 1);
-        assert!(batch.transaction_error.is_some());
-        assert_eq!(batch.signature, "failed");
+        assert!(matches!(stale, LiveNotificationOutcome::Skipped));
+        assert!(matches!(irrelevant, LiveNotificationOutcome::Skipped));
+        assert_eq!(reader.attempts("stale"), 0);
+        assert_eq!(reader.attempts("irrelevant"), 0);
     }
 
     #[tokio::test]
-    async fn retry_recovery_does_not_hide_a_persisted_history_gap() {
-        let (connections, mut updates) = mpsc::unbounded_channel();
-        let health = LiveFetchHealth::new(
-            connections,
-            PumpProgram::Pump.source_program(),
-            SourceConnectionState::ReadyWithGap,
+    async fn duplicate_program_subscriptions_share_one_discovery_attempt() {
+        let reader = Arc::new(FakeReader::default());
+        let config = runtime_config();
+        let windows = ObservationWindowRegistry::new(8);
+        let discovery_rpc = discovery_rpc(2);
+        let (health, _health_receiver) = mpsc::unbounded_channel();
+        let now = super::unix_time_millis();
+
+        let pump = collect_live_notification(
+            reader.as_ref(),
+            PumpProgram::Pump,
+            received("shared", now),
+            &config,
+            &windows,
+            &discovery_rpc,
+            &health,
+        );
+        let pump_swap = collect_live_notification(
+            reader.as_ref(),
+            PumpProgram::PumpSwap,
+            received("shared", now),
+            &config,
+            &windows,
+            &discovery_rpc,
+            &health,
+        );
+        let (pump, pump_swap) = tokio::join!(pump, pump_swap);
+
+        assert_eq!(reader.attempts("shared"), 1);
+        assert_eq!(
+            usize::from(matches!(pump, LiveNotificationOutcome::Batches(_)))
+                + usize::from(matches!(pump_swap, LiveNotificationOutcome::Batches(_))),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn global_rpc_permits_bound_discovery_fetches() {
+        let reader = Arc::new(FakeReader::default());
+        let discovery_rpc = discovery_rpc(1);
+        let windows = ObservationWindowRegistry::new(8);
+        let config = runtime_config();
+        let (health, _health_receiver) = mpsc::unbounded_channel();
+        let now = super::unix_time_millis();
+        let first = collect_live_notification(
+            reader.as_ref(),
+            PumpProgram::Pump,
+            received("slow", now),
+            &config,
+            &windows,
+            &discovery_rpc,
+            &health,
+        );
+        let second = collect_live_notification(
+            reader.as_ref(),
+            PumpProgram::Pump,
+            received("fast", now),
+            &config,
+            &windows,
+            &discovery_rpc,
+            &health,
         );
 
-        let guard = health.begin_retry();
-        guard.recovered();
+        let (first, second) = tokio::join!(first, second);
 
+        assert!(matches!(first, LiveNotificationOutcome::Batches(_)));
+        assert!(matches!(second, LiveNotificationOutcome::Batches(_)));
+        assert_eq!(reader.maximum_active.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn mixed_discovery_keeps_unrelated_pending_activity_in_a_separate_batch() {
+        let reader = FakeReader::default();
+        let config = runtime_config();
+        let windows = ObservationWindowRegistry::new(8);
+        let discovery_rpc = discovery_rpc(1);
+        let (health, _health_receiver) = mpsc::unbounded_channel();
+        let now = super::unix_time_millis();
+        let activity = complete_event(now / 1_000, 9);
+        let decoded_activity = decode_anchor_event(
+            PUMP_PROGRAM_ID,
+            ChainCoordinate {
+                slot: 42,
+                transaction_index: None,
+                signature: "mixed".to_owned(),
+                instruction_index: 0,
+                event_index: 1,
+            },
+            &activity,
+        )
+        .expect("complete fixture");
+        let activity_target =
+            event_tracking_target(&decoded_activity.event).expect("activity target");
+        let pending_activity = windows.provision_target(
+            activity_target,
+            "pending-a".to_owned(),
+            now,
+            Duration::from_secs(5),
+        );
+        let notification = received_with_events(
+            "mixed",
+            now,
+            &[create_event_for_mint(now / 1_000, 1), activity],
+        );
+
+        let outcome = collect_live_notification(
+            &reader,
+            PumpProgram::Pump,
+            notification,
+            &config,
+            &windows,
+            &discovery_rpc,
+            &health,
+        )
+        .await;
+        let LiveNotificationOutcome::Batches(batches) = outcome else {
+            panic!("mixed discovery should produce authoritative batches");
+        };
+
+        assert_eq!(batches.len(), 2);
+        let discovery = batches
+            .iter()
+            .find(|batch| batch.purpose == BatchPurpose::Discovery)
+            .expect("discovery batch");
+        let tracked = batches
+            .iter()
+            .find(|batch| batch.purpose == BatchPurpose::TrackedActivity)
+            .expect("tracked-activity batch");
+        assert_eq!(discovery.window_tokens.len(), 1);
+        assert!(
+            discovery
+                .window_tokens
+                .iter()
+                .all(|token| token != &pending_activity.token)
+        );
+        assert_eq!(tracked.window_tokens, vec![pending_activity.token.clone()]);
+
+        for token in &discovery.window_tokens {
+            token.cancel_if_pending();
+        }
         assert_eq!(
-            updates.recv().await.expect("recovering update").state,
-            SourceConnectionState::Recovering
+            pending_activity.token.status(),
+            ObservationWindowStatus::Pending,
+            "resolving discovery B must not cancel pending discovery A"
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_discovery_delivery_preserves_newly_matched_activity_without_http() {
+        let reader = FakeReader::default();
+        let config = runtime_config();
+        let windows = ObservationWindowRegistry::new(8);
+        let discovery_rpc = discovery_rpc(1);
+        let (health, _health_receiver) = mpsc::unbounded_channel();
+        let now = super::unix_time_millis();
+        let activity = complete_event(now / 1_000, 9);
+        let decoded_activity = decode_anchor_event(
+            PUMP_PROGRAM_ID,
+            ChainCoordinate {
+                slot: 42,
+                transaction_index: None,
+                signature: "duplicate".to_owned(),
+                instruction_index: 0,
+                event_index: 1,
+            },
+            &activity,
+        )
+        .expect("complete fixture");
+        let activity_target =
+            event_tracking_target(&decoded_activity.event).expect("activity target");
+        let pending_activity = windows.provision_target(
+            activity_target,
+            "pending-a".to_owned(),
+            now,
+            Duration::from_secs(5),
+        );
+        assert!(discovery_rpc.claim_signature("duplicate"));
+        let notification = received_with_events(
+            "duplicate",
+            now,
+            &[create_event_for_mint(now / 1_000, 1), activity],
+        );
+
+        let outcome = collect_live_notification(
+            &reader,
+            PumpProgram::PumpSwap,
+            notification,
+            &config,
+            &windows,
+            &discovery_rpc,
+            &health,
+        )
+        .await;
+        let LiveNotificationOutcome::Batches(batches) = outcome else {
+            panic!("duplicate delivery should preserve tracked activity");
+        };
+
+        assert_eq!(reader.attempts("duplicate"), 0);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].purpose, BatchPurpose::TrackedActivity);
+        assert_eq!(
+            batches[0].window_tokens,
+            vec![pending_activity.token.clone()]
         );
         assert_eq!(
-            updates.recv().await.expect("gapped-ready update").state,
-            SourceConnectionState::ReadyWithGap
+            pending_activity.token.status(),
+            ObservationWindowStatus::Pending
         );
+    }
+
+    #[tokio::test]
+    async fn replay_for_an_existing_provisional_target_uses_zero_http_and_cannot_cancel_its_owner()
+    {
+        let reader = FakeReader::default();
+        let config = runtime_config();
+        let windows = ObservationWindowRegistry::new(8);
+        let discovery_rpc = discovery_rpc(1);
+        let (health, _health_receiver) = mpsc::unbounded_channel();
+        let now = super::unix_time_millis();
+        let create = create_event_for_mint(now / 1_000, 1);
+        let decoded = decode_anchor_event(
+            PUMP_PROGRAM_ID,
+            ChainCoordinate {
+                slot: 42,
+                transaction_index: None,
+                signature: "original".to_owned(),
+                instruction_index: 0,
+                event_index: 0,
+            },
+            &create,
+        )
+        .expect("create fixture");
+        let seed = discovery_seed(&decoded.event).expect("discovery seed");
+        let original =
+            windows.provision_target(seed.target, seed.mint, now, Duration::from_secs(5));
+
+        let outcome = collect_live_notification(
+            &reader,
+            PumpProgram::Pump,
+            received_with_event("replay", now, create),
+            &config,
+            &windows,
+            &discovery_rpc,
+            &health,
+        )
+        .await;
+
+        assert!(matches!(outcome, LiveNotificationOutcome::Skipped));
+        assert_eq!(reader.attempts("replay"), 0);
+        assert_eq!(original.token.status(), ObservationWindowStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn discovery_that_ages_out_waiting_for_admission_uses_zero_http_attempts() {
+        let reader = FakeReader::default();
+        let mut config = runtime_config();
+        config.maximum_discovery_age = Duration::from_secs(1);
+        let windows = ObservationWindowRegistry::new(8);
+        let discovery_rpc = discovery_rpc(1);
+        let (health, _health_receiver) = mpsc::unbounded_channel();
+        let held_permit = discovery_rpc.acquire().await.expect("held permit");
+        let now = super::unix_time_millis();
+        let collection = collect_live_notification(
+            &reader,
+            PumpProgram::Pump,
+            received_with_event(
+                "aged-out",
+                now,
+                create_event((now / 1_000).saturating_add(1)),
+            ),
+            &config,
+            &windows,
+            &discovery_rpc,
+            &health,
+        );
+        tokio::pin!(collection);
+        tokio::select! {
+            _ = &mut collection => panic!("blocked discovery should not resolve before its deadline"),
+            () = tokio::time::sleep(Duration::from_millis(20)) => {}
+        }
+        assert_eq!(
+            windows.active_count(super::unix_time_millis()),
+            1,
+            "the test must reach provisional admission before waiting for expiry"
+        );
+        let outcome = tokio::time::timeout(Duration::from_secs(2), &mut collection)
+            .await
+            .expect("freshness deadline should bound admission wait");
+        drop(held_permit);
+
+        assert!(matches!(outcome, LiveNotificationOutcome::Skipped));
+        assert_eq!(reader.attempts("aged-out"), 0);
+        assert_eq!(windows.active_count(super::unix_time_millis()), 0);
     }
 }

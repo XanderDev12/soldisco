@@ -5,8 +5,11 @@
 
 pub mod collector;
 pub mod discovery;
+pub mod discovery_rpc;
+pub mod intake;
 pub mod maintenance;
 pub mod normalization;
+pub mod pending_activity;
 pub mod pipeline;
 pub mod projection;
 pub mod raydium;

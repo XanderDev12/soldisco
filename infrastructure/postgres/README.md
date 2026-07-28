@@ -52,7 +52,7 @@ the standard scripts.
 
 SQL schema changes belong to
 `crates/persistence/migrations`. The initial migration creates durable chain
-identity, a pending-work handoff, recovery checkpoints, deterministic rule
-results, and projection events. Retention jobs will later bound raw
-high-volume event storage while preserving the facts required for recovery and
-audit.
+identity, a pending-work handoff, reserved recovery checkpoints, deterministic
+rule results, and projection events. Implemented retention jobs prune eligible
+terminal raw history, replaceable projection events, and quarantine evidence
+in bounded batches while preserving pending work and current aggregates.

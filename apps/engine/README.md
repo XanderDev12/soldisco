@@ -5,7 +5,9 @@ runnable service and is superseded by the Rust crates:
 
 - `crates/source-pump` decodes Pump and PumpSwap events.
 - `crates/source-raydium` decodes supported venue evidence when applicable.
-- `crates/solana-rpc` owns provider-neutral Solana access and recovery.
+- `crates/solana-rpc` owns provider-neutral Solana access plus reserved
+  explicit-recovery primitives; active collection is live-first with no
+  backfill.
 - `crates/discovery-engine` owns rolling metrics and inexpensive qualification.
 - `crates/risk-engine` owns deterministic evidence and scoring.
 - `crates/projections` owns browser-facing read models.
