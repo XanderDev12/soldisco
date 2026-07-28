@@ -85,6 +85,37 @@ export type StreamStateResponse = {
   requested_running: boolean;
 };
 
+export type PrefilterDefaultsValues = {
+  max_event_age_ms: number;
+  observation_window_ms: number;
+  max_active_windows: number;
+  rpc_requests_per_second: number;
+  rpc_max_in_flight: number;
+  rpc_request_timeout_ms: number;
+  rpc_rate_limit_cooldown_ms: number;
+};
+
+export type IntegerSettingBounds = {
+  minimum: number;
+  maximum: number;
+};
+
+export type PrefilterDefaultsBounds = {
+  [Field in keyof PrefilterDefaultsValues]: IntegerSettingBounds;
+};
+
+export type PrefilterDefaultsResponse = {
+  revision: number;
+  values: PrefilterDefaultsValues;
+  bounds: PrefilterDefaultsBounds;
+  apply_requirement: "STREAM_RESTART";
+};
+
+export type UpdatePrefilterDefaultsRequest = {
+  expected_revision: number;
+  values: PrefilterDefaultsValues;
+};
+
 export type HealthResponse = {
   status: string;
   database: string;

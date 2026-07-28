@@ -32,8 +32,9 @@ latency over catch-up:
 - failed notifications are discarded before HTTP
 - only direct fresh Pump creation and PumpSwap pool-creation logs are eligible
   for `getTransaction`
-- within one running server process, duplicate Pump/PumpSwap subscription
-  delivery shares one signature claim for the full freshness horizon
+- within one continuously running stream instance, duplicate Pump/PumpSwap
+  subscription delivery shares one signature claim for the full freshness
+  horizon
 - each selected signature receives at most one globally paced HTTP attempt in
   that process
 - a discovery that ages out while waiting for request admission is skipped

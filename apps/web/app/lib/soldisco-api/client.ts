@@ -2,14 +2,17 @@ import type {
   DiscoverySnapshot,
   DiscoveryToken,
   HealthResponse,
+  PrefilterDefaultsResponse,
   StreamCommandResponse,
   StreamStateResponse,
+  UpdatePrefilterDefaultsRequest,
 } from "./contracts";
 import { errorFromResponse, normalizeApiError } from "./errors";
 import {
   parseDiscoverySnapshot,
   parseDiscoveryToken,
   parseHealth,
+  parsePrefilterDefaults,
   parseStreamCommand,
   parseStreamState,
 } from "./parsers";
@@ -45,6 +48,13 @@ export class SoldiscoApiClient {
     return this.#request("/discovery", parseDiscoverySnapshot);
   }
 
+  get prefilterDefaults(): Promise<PrefilterDefaultsResponse> {
+    return this.#request(
+      "/settings/prefilter-defaults",
+      parsePrefilterDefaults,
+    );
+  }
+
   token(mint: string): Promise<DiscoveryToken> {
     return this.#request(
       `/tokens/${encodeURIComponent(mint)}`,
@@ -68,14 +78,29 @@ export class SoldiscoApiClient {
     });
   }
 
+  updatePrefilterDefaults(
+    request: UpdatePrefilterDefaultsRequest,
+  ): Promise<PrefilterDefaultsResponse> {
+    return this.#request(
+      "/settings/prefilter-defaults",
+      parsePrefilterDefaults,
+      {
+        method: "PUT",
+        localControl: true,
+        jsonBody: request,
+      },
+    );
+  }
+
   async #request<T>(
     path: string,
     parser: JsonParser<T>,
     options: {
-      method?: "GET" | "POST";
+      method?: "GET" | "POST" | "PUT";
       acceptedErrorStatuses?: number[];
       timeoutMs?: number;
       localControl?: boolean;
+      jsonBody?: unknown;
     } = {},
   ): Promise<T> {
     const controller = new AbortController();
@@ -95,7 +120,14 @@ export class SoldiscoApiClient {
                   LOCAL_CONTROL_HEADER_VALUE,
               }
             : {}),
+          ...(options.jsonBody === undefined
+            ? {}
+            : { "Content-Type": "application/json" }),
         },
+        body:
+          options.jsonBody === undefined
+            ? undefined
+            : JSON.stringify(options.jsonBody),
         cache: "no-store",
         signal: controller.signal,
       });

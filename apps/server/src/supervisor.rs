@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
-use soldisco_api_contracts::{LiveEvent, StreamCommandResponse, StreamStateResponse, StreamStatus};
-use soldisco_persistence::{Database, PersistenceError};
+use soldisco_api_contracts::{
+    LiveEvent, PrefilterDefaults, StreamCommandResponse, StreamStateResponse, StreamStatus,
+};
+use soldisco_persistence::{Database, PersistenceError, StoredPrefilterDefaults};
 use thiserror::Error;
 use tokio::{
     sync::{Mutex, RwLock},
@@ -11,10 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::error;
 
 use crate::{
-    jobs::{
-        discovery_rpc::DiscoveryRpcGate,
-        pipeline::{PipelineConfig, PipelineError, SpawnedPipeline, spawn_pipeline},
-    },
+    jobs::pipeline::{PipelineConfig, PipelineError, SpawnedPipeline, spawn_pipeline},
     state::LiveEventBus,
 };
 
@@ -25,7 +24,6 @@ pub struct StreamSupervisor {
     status: Arc<RwLock<StreamStatus>>,
     shutdown: CancellationToken,
     pipeline_config: PipelineConfig,
-    discovery_rpc: DiscoveryRpcGate,
     start_timeout: std::time::Duration,
     command_lock: Arc<Mutex<()>>,
     running: Arc<Mutex<Option<RunningPipeline>>>,
@@ -41,6 +39,8 @@ struct RunningPipeline {
 pub enum SupervisorError {
     #[error("the discovery stream is shutting down")]
     ShuttingDown,
+    #[error("prefilter defaults can only be changed while the stream is explicitly stopped")]
+    PrefilterSettingsRequireStopped,
     #[error(transparent)]
     Pipeline(#[from] PipelineError),
     #[error(transparent)]
@@ -60,15 +60,12 @@ impl StreamSupervisor {
         } else {
             StreamStatus::Stopped
         };
-        let discovery_rpc = pipeline_config.discovery_rpc_gate();
-
         Ok(Self {
             database,
             events,
             status: Arc::new(RwLock::new(status)),
             shutdown: CancellationToken::new(),
             pipeline_config,
-            discovery_rpc,
             start_timeout,
             command_lock: Arc::new(Mutex::new(())),
             running: Arc::new(Mutex::new(None)),
@@ -131,6 +128,38 @@ impl StreamSupervisor {
         *self.status.read().await
     }
 
+    pub async fn prefilter_defaults(&self) -> Result<StoredPrefilterDefaults, PersistenceError> {
+        self.database.load_prefilter_defaults().await
+    }
+
+    pub async fn update_prefilter_defaults(
+        &self,
+        expected_revision: u64,
+        values: PrefilterDefaults,
+    ) -> Result<StoredPrefilterDefaults, SupervisorError> {
+        let _command = self.command_lock.lock().await;
+        if self.shutdown.is_cancelled() {
+            return Err(SupervisorError::ShuttingDown);
+        }
+
+        let status = *self.status.read().await;
+        let requested_running = self.database.stream_requested_running().await?;
+        let has_running_pipeline = self
+            .running
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|pipeline| !pipeline.monitor.is_finished());
+        if !prefilter_settings_are_editable(status, requested_running, has_running_pipeline) {
+            return Err(SupervisorError::PrefilterSettingsRequireStopped);
+        }
+
+        Ok(self
+            .database
+            .update_prefilter_defaults(expected_revision, values)
+            .await?)
+    }
+
     pub fn shutdown(&self) {
         self.shutdown.cancel();
         if let Ok(running) = self.running.try_lock()
@@ -160,12 +189,17 @@ impl StreamSupervisor {
             let _ = finished.monitor.await;
         }
 
+        let persisted = self.database.load_prefilter_defaults().await?;
+        let pipeline_config = self
+            .pipeline_config
+            .with_prefilter_defaults(persisted.values);
+        let discovery_rpc = pipeline_config.discovery_rpc_gate();
         self.set_status(StreamStatus::Starting).await;
         let spawned = match spawn_pipeline(
             self.database.clone(),
             self.events.clone(),
-            self.pipeline_config.clone(),
-            self.discovery_rpc.clone(),
+            pipeline_config,
+            discovery_rpc,
         )
         .await
         {
@@ -207,6 +241,14 @@ impl StreamSupervisor {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
     }
+}
+
+fn prefilter_settings_are_editable(
+    status: StreamStatus,
+    requested_running: bool,
+    has_running_pipeline: bool,
+) -> bool {
+    status == StreamStatus::Stopped && !requested_running && !has_running_pipeline
 }
 
 fn spawn_monitor(
@@ -286,5 +328,41 @@ async fn await_monitor(
             monitor.abort();
             let _ = monitor.await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use soldisco_api_contracts::StreamStatus;
+
+    use super::prefilter_settings_are_editable;
+
+    #[test]
+    fn prefilter_settings_require_an_explicitly_stopped_stream() {
+        assert!(prefilter_settings_are_editable(
+            StreamStatus::Stopped,
+            false,
+            false
+        ));
+        assert!(!prefilter_settings_are_editable(
+            StreamStatus::Running,
+            true,
+            true
+        ));
+        assert!(!prefilter_settings_are_editable(
+            StreamStatus::Stopped,
+            true,
+            false
+        ));
+        assert!(!prefilter_settings_are_editable(
+            StreamStatus::Stopped,
+            false,
+            true
+        ));
+        assert!(!prefilter_settings_are_editable(
+            StreamStatus::Error,
+            false,
+            false
+        ));
     }
 }

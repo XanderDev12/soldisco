@@ -51,7 +51,7 @@ apps/
 └── server/                      The single Rust executable
     └── src/
         ├── main.rs              Process startup and graceful shutdown
-        ├── config.rs            Validated environment configuration
+        ├── config.rs            Validated boot config and first-run defaults
         ├── state.rs             Shared service and repository handles
         ├── supervisor.rs        Truthful stream lifecycle and cancellation
         ├── http/
@@ -60,6 +60,7 @@ apps/
         │   └── routes/
         │       ├── health.rs    Database and aggregate stream health
         │       ├── stream.rs    Start, stop, and stream-status commands
+        │       ├── settings.rs  Revisioned global Prefilter Defaults
         │       ├── discovery.rs OBSERVE_ALL feed and current counters
         │       ├── tokens.rs    Observed-token inspector snapshots
         │       └── events.rs    SSE projection stream
@@ -117,6 +118,8 @@ GET  /api/v1/health
 GET  /api/v1/stream
 POST /api/v1/stream/start
 POST /api/v1/stream/stop
+GET  /api/v1/settings/prefilter-defaults
+PUT  /api/v1/settings/prefilter-defaults
 GET  /api/v1/discovery
 GET  /api/v1/tokens/{mint}
 GET  /api/v1/events
@@ -161,7 +164,7 @@ that continues without an open browser request. The implemented workers are:
 
 - Pump and PumpSwap sources maintain subscriptions with an idle watchdog and
   prefilter fresh creation logs
-- a process-lifetime discovery-RPC gate deduplicates signatures across both
+- a stream-instance discovery-RPC gate deduplicates signatures across both
   subscriptions for their full freshness horizon, paces request starts, bounds
   concurrency, and applies a cooldown to later signatures after a provider
   rate-limit response
@@ -223,17 +226,18 @@ Neither path creates an `OBSERVED` candidate.
 
 PubSub is the low-latency discovery and activity source. Failed notifications,
 irrelevant events, and stale creation events are discarded from their direct
-logs. During one running server process, a fresh Pump creation or PumpSwap pool
-creation can receive at most one globally deduplicated and paced HTTP
-transaction attempt with the same signature and exact slot. If it ages out
+logs. During one continuously running stream instance, a fresh Pump creation
+or PumpSwap pool creation can receive at most one globally deduplicated and
+paced HTTP transaction attempt with the same signature and exact slot. If it ages out
 before request admission, the collector cancels its provisional window and
 skips HTTP. If an attempted request fails, the collector also cancels that
 window and moves on. A provider rate-limit response places later distinct
-signatures into a shared cooldown but does not retry the failed signature. A
-full process restart recreates this in-memory claim set without performing
-intentional retry or backfill. Accepted discovery transactions retain full
-attributed program-data and supported Anchor CPI evidence for both Pump
-programs; matching active-window activity is decoded directly from PubSub.
+signatures into a shared cooldown but does not retry the failed signature.
+Stopping and starting the stream, or restarting the process, recreates this
+in-memory claim set without performing intentional retry or backfill. Accepted
+discovery transactions retain full attributed program-data and supported
+Anchor CPI evidence for both Pump programs; matching active-window activity is
+decoded directly from PubSub.
 Receipt-time tokens preserve activity that arrived while HTTP or queue work was
 pending. A watchdog reconnects silent subscriptions at the current head without
 missed-history recovery.

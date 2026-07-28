@@ -23,8 +23,8 @@ always-on or cloud backend is part of the current architecture.
 2. Solana PubSub emits Pump and PumpSwap program activity. Failed transactions,
    stale discoveries, and irrelevant events are discarded from their direct
    logs. Fresh token or pool creation immediately provisions a short activity
-   window and, within the running server process, can receive at most one
-   globally deduplicated, paced, and concurrency-bounded HTTP transaction
+   window and, within the continuously running stream instance, can receive at
+   most one globally deduplicated, paced, and concurrency-bounded HTTP transaction
    request. A discovery that ages out before admission is cancelled and skipped
    without HTTP; an attempted request failure cancels the window and skips that
    signature.

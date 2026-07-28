@@ -13,11 +13,14 @@ separate services.
 - structured JSON logging and graceful shutdown
 - database-aware health
 - supervised, idempotent Start and Stop commands with durable requested state
+- revisioned global Prefilter Defaults persisted in PostgreSQL, editable only
+  while explicitly stopped and applied through a fresh pipeline/RPC gate on
+  the next Start
 - successful-log prefiltering for fresh Pump creation and PumpSwap pool
   creation before HTTP
 - at most one `getTransaction` attempt for each selected signature during the
-  running server process, with discoveries that age out before admission
-  skipped without HTTP, duplicate Pump/PumpSwap subscription delivery
+  continuously running stream instance, with discoveries that age out before
+  admission skipped without HTTP, duplicate Pump/PumpSwap subscription delivery
   deduplicated, and one global request pace, rate-limit cooldown, and
   concurrency limit shared across both sources
 - live-first reconnects with no transaction retry or historical backfill, plus
@@ -42,6 +45,10 @@ supervised state: `STARTING`, `RUNNING`, `DEGRADED`, or `ERROR`. Stop cancels
 the collection tasks without terminating the HTTP server or deleting durable
 observations. Both commands require the fixed local-control header, the exact
 configured Host, and—when a browser supplies it—the exact configured Origin.
+`GET /api/v1/settings/prefilter-defaults` exposes the current values and
+supported bounds. Its locally guarded `PUT` replacement requires the stream to
+be stopped and an exact expected revision, preventing hidden restarts and
+lost updates between browser sessions.
 
 The current discovery worker is intentionally structural only. It records
 valid decoded candidates as `OBSERVED`; it does not apply thresholds, approve
@@ -51,7 +58,9 @@ or reject tokens, or produce risk/opportunity scores.
 
 - `config.rs` validates environment input without exposing the database URL.
 - `state.rs` owns database, event-bus, and supervisor handles.
-- `supervisor.rs` owns desired/actual stream lifecycle and cancellation.
+- `supervisor.rs` owns desired/actual stream lifecycle and cancellation. It
+  also serializes Start, Stop, and persisted Prefilter Defaults changes so a
+  settings update cannot race stream launch.
 - `http/` contains transport-only routing, errors, and route handlers.
 - `jobs/pipeline.rs` composes and supervises the collector processor and
   discovery worker.

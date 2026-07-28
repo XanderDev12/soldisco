@@ -28,14 +28,16 @@ export function SectionHeader({
         </h1>
         <p>{description}</p>
       </div>
-      <dl>
-        {stats.map((stat) => (
-          <div key={stat}>
-            <dt>{stat}</dt>
-            <dd aria-label={`${stat.toLowerCase()} unavailable`}>—</dd>
-          </div>
-        ))}
-      </dl>
+      {stats.length > 0 && (
+        <dl>
+          {stats.map((stat) => (
+            <div key={stat}>
+              <dt>{stat}</dt>
+              <dd aria-label={`${stat.toLowerCase()} unavailable`}>—</dd>
+            </div>
+          ))}
+        </dl>
+      )}
     </header>
   );
 }

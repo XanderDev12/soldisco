@@ -14,6 +14,7 @@ mod error;
 mod markets;
 mod network_binding;
 mod observations;
+mod prefilter_defaults;
 mod pump_swap;
 mod quarantine;
 mod retention;
@@ -32,6 +33,7 @@ pub use checkpoints::RecoveryCheckpoint;
 pub use collection_gaps::{CollectionGap, CollectionPosition, NewCollectionGap};
 pub use discovery::{DiscoveryObservation, DiscoveryProjectionMutation, DiscoveryRejection};
 pub use error::PersistenceError;
+pub use prefilter_defaults::StoredPrefilterDefaults;
 pub use pump_swap::PumpSwapPool;
 pub use quarantine::{
     IntakeQuarantineRecord, MAX_QUARANTINE_EVIDENCE_BASE64_BYTES, StoredIntakeQuarantine,
@@ -115,6 +117,7 @@ mod tests {
         let foundation = include_str!("../migrations/0001_foundation.sql");
         let pipeline = include_str!("../migrations/0002_durable_discovery_pipeline.sql");
         let hardening = include_str!("../migrations/0003_persistence_hardening.sql");
+        let prefilter_defaults = include_str!("../migrations/0004_prefilter_defaults.sql");
 
         assert!(foundation.contains("signature"));
         assert!(foundation.contains("instruction_index"));
@@ -132,5 +135,12 @@ mod tests {
         assert!(hardening.contains("transaction_index"));
         assert!(hardening.contains("observation_work_terminal_retention_idx"));
         assert!(hardening.contains("soldisco_enforce_bound_network"));
+        assert!(prefilter_defaults.contains("CREATE TABLE prefilter_defaults"));
+        assert!(prefilter_defaults.contains("revision BIGINT"));
+        assert!(prefilter_defaults.contains("rpc_request_timeout_ms <= max_event_age_ms"));
+        assert!(
+            !prefilter_defaults.contains("INSERT INTO prefilter_defaults"),
+            "validated environment values seed this table exactly once at runtime"
+        );
     }
 }

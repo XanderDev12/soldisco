@@ -30,6 +30,13 @@ const dashboardSourceFiles = [
   "useDashboardLayout.ts",
   "useCompactNavigation.ts",
   "useDiscoveryBackend.ts",
+  "controls/ExecutionModeCard.tsx",
+  "controls/NumberSettingField.tsx",
+  "controls/PrefilterDefaultsForm.tsx",
+  "controls/PrefilterDefaultsSection.tsx",
+  "controls/StreamControlCard.tsx",
+  "controls/prefilterDefaultsDraft.ts",
+  "controls/usePrefilterDefaults.ts",
   "inspector/OverviewTab.tsx",
   "inspector/PositionTab.tsx",
   "inspector/RiskTab.tsx",
@@ -242,7 +249,35 @@ test("keeps empty trackers and execution boundaries explicit", async () => {
   assert.match(sources["views/AlertsView.tsx"], /No alerts configured/);
   assert.match(sources["views/StrategiesView.tsx"], /No validated strategies/);
   assert.match(sources["views/ReplaysView.tsx"], /No replay data/);
-  assert.match(sources["views/ControlsView.tsx"], /Local API/);
+  assert.match(sources["controls/StreamControlCard.tsx"], /Local API/);
+  assert.match(
+    sources["controls/PrefilterDefaultsSection.tsx"],
+    /Prefilter-Defaults/,
+  );
+  assert.match(
+    sources["controls/PrefilterDefaultsSection.tsx"],
+    /Successful transactions only/,
+  );
+  assert.match(
+    sources["controls/PrefilterDefaultsSection.tsx"],
+    /No transaction retry or historical backfill/,
+  );
+  assert.match(
+    sources["controls/PrefilterDefaultsForm.tsx"],
+    /Applies on next stream start/,
+  );
+  assert.match(
+    sources["controls/PrefilterDefaultsForm.tsx"],
+    /streamStopped/,
+  );
+  assert.match(
+    sources["controls/usePrefilterDefaults.ts"],
+    /updatePrefilterDefaults/,
+  );
+  assert.doesNotMatch(
+    sources["views/ControlsView.tsx"],
+    /STREAM RATE|FIRST-PASS RATE|MEDIAN LATENCY/,
+  );
   assert.doesNotMatch(
     allDashboardSource,
     /\bfetch\s*\(|\bWebSocket\s*\(|\bEventSource\b|\bMath\.random\b|\bsetInterval\b/,
@@ -356,6 +391,9 @@ test("keeps dashboard UI split across focused modules", async () => {
     "TokenStreamView.tsx": 180,
     "TokenInspector.tsx": 180,
     "views/DashboardSectionView.tsx": 120,
+    "views/ControlsView.tsx": 80,
+    "controls/PrefilterDefaultsForm.tsx": 180,
+    "controls/PrefilterDefaultsSection.tsx": 260,
   };
 
   assert.equal(Object.keys(sources).length, dashboardSourceFiles.length);
@@ -374,6 +412,13 @@ test("keeps dashboard UI split across focused modules", async () => {
     "views/StrategiesView.tsx",
     "views/ReplaysView.tsx",
     "views/ControlsView.tsx",
+    "controls/ExecutionModeCard.tsx",
+    "controls/NumberSettingField.tsx",
+    "controls/PrefilterDefaultsForm.tsx",
+    "controls/PrefilterDefaultsSection.tsx",
+    "controls/StreamControlCard.tsx",
+    "controls/prefilterDefaultsDraft.ts",
+    "controls/usePrefilterDefaults.ts",
     "inspector/OverviewTab.tsx",
     "inspector/RiskTab.tsx",
     "inspector/SignalsTab.tsx",

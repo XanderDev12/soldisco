@@ -6,8 +6,12 @@ import type {
   DiscoveryStage,
   DiscoveryToken,
   HealthResponse,
+  IntegerSettingBounds,
   LiveEnvelope,
   LiveEvent,
+  PrefilterDefaultsBounds,
+  PrefilterDefaultsResponse,
+  PrefilterDefaultsValues,
   RejectionSummary,
   SourceProgram,
   StreamCommandResponse,
@@ -60,6 +64,16 @@ const sourcePrograms = [
   "RAYDIUM_CLMM",
   "RAYDIUM_AMM_V4",
 ] as const satisfies readonly SourceProgram[];
+
+const prefilterDefaultFields = [
+  "max_event_age_ms",
+  "observation_window_ms",
+  "max_active_windows",
+  "rpc_requests_per_second",
+  "rpc_max_in_flight",
+  "rpc_request_timeout_ms",
+  "rpc_rate_limit_cooldown_ms",
+] as const satisfies readonly (keyof PrefilterDefaultsValues)[];
 
 function recordAt(value: unknown, path: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -114,6 +128,70 @@ function nullableScoreAt(value: unknown, path: string): number | null {
     throw new ContractParseError(path, "an integer from 0 through 100");
   }
   return score;
+}
+
+function parseIntegerBounds(
+  value: unknown,
+  path: string,
+): IntegerSettingBounds {
+  const bounds = recordAt(value, path);
+  const minimum = safeIntegerAt(bounds.minimum, `${path}.minimum`, 1);
+  const maximum = safeIntegerAt(bounds.maximum, `${path}.maximum`, 1);
+  if (maximum < minimum) {
+    throw new ContractParseError(
+      `${path}.maximum`,
+      "an integer greater than or equal to minimum",
+    );
+  }
+  return { minimum, maximum };
+}
+
+function parsePrefilterBounds(
+  value: unknown,
+  path: string,
+): PrefilterDefaultsBounds {
+  const source = recordAt(value, path);
+  return Object.fromEntries(
+    prefilterDefaultFields.map((field) => [
+      field,
+      parseIntegerBounds(source[field], `${path}.${field}`),
+    ]),
+  ) as PrefilterDefaultsBounds;
+}
+
+function parsePrefilterValues(
+  value: unknown,
+  bounds: PrefilterDefaultsBounds,
+  path: string,
+): PrefilterDefaultsValues {
+  const source = recordAt(value, path);
+  const values = Object.fromEntries(
+    prefilterDefaultFields.map((field) => {
+      const fieldPath = `${path}.${field}`;
+      const parsed = safeIntegerAt(source[field], fieldPath, 1);
+      const allowed = bounds[field];
+      if (parsed < allowed.minimum || parsed > allowed.maximum) {
+        throw new ContractParseError(
+          fieldPath,
+          `an integer from ${allowed.minimum} through ${allowed.maximum}`,
+        );
+      }
+      return [field, parsed];
+    }),
+  ) as PrefilterDefaultsValues;
+  if (values.rpc_request_timeout_ms > values.max_event_age_ms) {
+    throw new ContractParseError(
+      `${path}.rpc_request_timeout_ms`,
+      "a timeout no greater than max_event_age_ms",
+    );
+  }
+  if (values.observation_window_ms < values.rpc_request_timeout_ms) {
+    throw new ContractParseError(
+      `${path}.observation_window_ms`,
+      "a duration no shorter than rpc_request_timeout_ms",
+    );
+  }
+  return values;
 }
 
 function enumAt<const Value extends string>(
@@ -304,6 +382,23 @@ export function parseHealth(value: unknown): HealthResponse {
     status: stringAt(health.status, "$.status"),
     database: stringAt(health.database, "$.database"),
     stream: parseStreamStatus(health.stream, "$.stream"),
+  };
+}
+
+export function parsePrefilterDefaults(
+  value: unknown,
+): PrefilterDefaultsResponse {
+  const response = recordAt(value, "$");
+  const bounds = parsePrefilterBounds(response.bounds, "$.bounds");
+  return {
+    revision: safeIntegerAt(response.revision, "$.revision", 1),
+    values: parsePrefilterValues(response.values, bounds, "$.values"),
+    bounds,
+    apply_requirement: enumAt(
+      response.apply_requirement,
+      "$.apply_requirement",
+      ["STREAM_RESTART"] as const,
+    ),
   };
 }
 

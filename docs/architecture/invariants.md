@@ -55,8 +55,8 @@ deployment topology.
 - Live WebSocket delivery is not presumed complete. The current `live-first`
   mode intentionally performs no historical recovery after a disconnect or
   restart.
-- Within one running server process, duplicate Pump/PumpSwap subscription
-  delivery shares one discovery-signature claim for the full freshness
+- Within one continuously running stream instance, duplicate Pump/PumpSwap
+  subscription delivery shares one discovery-signature claim for the full freshness
   horizon. Each selected signature receives at most one globally paced HTTP
   transaction attempt. A discovery that ages out before request admission is
   skipped without HTTP. Failure, timeout, rate limiting, or unavailability
