@@ -11,35 +11,74 @@
 - Add UI-only start and stop controls while keeping discovery disconnected.
 - Keep wallet and execution controls explicitly disabled.
 
-## 2. Contracts and projection pipeline
+## 2. Architecture and reproducibility contracts — current
 
-- Define versioned token, check-result, score, and strategy-result contracts.
+- Record permanent authority, safety, and fail-closed invariants.
+- Define source provenance, event/receipt time, chain coordinates, market
+  identity, deduplication, correction, finality, and raw observation rules.
+- Define live-observation and cursor-based backfill boundaries.
+- Define candidate-window and immutable feature-snapshot contracts.
+- Treat the global pipeline stage as a derived UI projection over independent
+  component statuses.
+- Add immutable strategy-evaluation identity and snapshot references.
+- State explicitly that the initial backend is a modular monolith.
 - Feed the web application through a typed, read-only stream boundary.
 - Add isolated test records for healthy, risky, incomplete, and failed candidates
   without shipping them in the product UI.
 
-## 3. Basic discovery and first-pass checks
+## 3. Source intake and raw history
 
 - Add an Axiom adapter behind a source interface.
+- Preserve source filter versions, match reasons, triggering wallets/groups,
+  cursors, source IDs, and raw evidence references.
+- Record rejected candidates, duplicate observations, missing data, and source
+  outages.
+- Support live intake and deterministic historical recovery.
+
+## 4. Deterministic first pass
+
 - Add provider-neutral Solana RPC access.
 - Implement a minimal, explainable set of scam and rug filters.
-- Preserve raw observations and reason codes for audit and replay.
+- Preserve reason codes, rule versions, evidence, and freshness.
+- Identify exact network, mint, pool or market, venue, and migration state where
+  the check depends on market data.
 
-## 4. Strategies
+## 5. Candidate monitoring and advisory analysis
+
+- Open, update, expire, and invalidate time-bounded candidate windows.
+- Produce versioned market-feature snapshots across explicit windows.
+- Project independent discovery, check, risk, feature, AI, and strategy states.
+- Run bounded AI analysis asynchronously and advisory-only.
+
+## 6. Wallet intelligence and strategies
 
 - Define a declarative, versioned strategy manifest.
 - Add upload validation, replay, activation, and toggles.
-- Implement wallet-conditioned momentum only after trusted-wallet data is designed.
+- Define time-versioned wallet profiles, scores, typed relationships, and
+  cluster snapshots with anti-lookahead rules.
+- Implement Wallet-Conditioned Momentum only after those inputs are available.
+- Evaluate active candidate windows repeatedly from immutable snapshots.
 
-## 5. Paper trading and portfolio projections
+## 7. Replay, paper trading, and portfolio projections
 
+- Rebuild projections and strategy decisions from as-of information.
+- Simulate processing latency, fees, priority fees, slippage, price impact,
+  failures, sellability, and exit constraints.
 - Produce trade proposals without signing or submission.
 - Reconcile simulated fills into positions and PnL.
 - Add exposure and loss-limit controls.
 
-## 6. Explicit live execution
+## 8. Interactive live execution
 
 - Add non-custodial browser-wallet signing.
 - Verify and simulate transactions before presenting them for signature.
 - Add execution policies, audit events, confirmation, and reconciliation.
-- Keep automation disabled until separately designed and approved.
+- Require explicit user review for every transaction.
+
+## 9. Automated execution — separately approved future scope
+
+- Design bounded, revocable, auditable signing authority without backend seed
+  phrases or raw exportable private keys.
+- Add capital, strategy, venue, rate, exposure, and loss limits.
+- Add independent kill switches and authorization-expiry behavior.
+- Do not enable this milestone by extending an interactive-mode flag.

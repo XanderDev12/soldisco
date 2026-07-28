@@ -23,9 +23,11 @@ TypeScript, and Tailwind's CSS toolchain.
 
 ## Run locally
 
-Requires Node.js `>=22.13.0`.
+Requires Node.js `>=24.18.0`. The repository `.nvmrc` pins the exact version
+used by CI.
 
 ```bash
+nvm use
 npm install
 npm run dev
 ```
@@ -40,9 +42,10 @@ npm run typecheck
 npm test
 ```
 
-Use `npm run quality` for the complete feature gate. It checks linting,
-application and shared-package types, creates a production build, and verifies
-the server-rendered dashboard and its safety boundaries.
+From the repository root, use `npm run verify` for the complete feature gate.
+It checks linting, application and shared-package types, creates a production
+build, verifies the server-rendered dashboard and its safety boundaries, and
+runs the production dependency audit.
 
 ## UI module layout
 
@@ -63,6 +66,7 @@ modules rather than folded into the orchestration shell.
 
 ## Next milestone
 
-Add a read-only Axiom candidate adapter and a minimal deterministic gate behind
-the service contracts in the repository root. Wallet connectivity, quotes,
-signing, and transaction submission remain separate later milestones.
+Define the provenance, replay, candidate-window, and projection contracts, then
+add a read-only Axiom candidate adapter and minimal deterministic RPC gate.
+Wallet connectivity, quotes, signing, and transaction submission remain
+separate later milestones.

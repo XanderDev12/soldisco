@@ -3,3 +3,7 @@
 Lifecycle contracts for future non-custodial execution. A strategy signal, trade
 proposal, user-approved intent, order, prepared transaction, submitted transaction,
 and fill are distinct records. No signer or private-key contract is defined here.
+
+Paper, interactive-live, and automated modes have different authority
+requirements. See the [execution
+model](../../docs/architecture/execution-model.md).
