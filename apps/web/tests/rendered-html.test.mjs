@@ -10,7 +10,8 @@ const dashboardRoot = new URL(
 const dashboardSourceFiles = [
   "DiscoveryDashboard.tsx",
   "DashboardTopbar.tsx",
-  "PositionsTray.tsx",
+  "DiscoveryCounters.tsx",
+  "RejectionLog.tsx",
   "Sidebar.tsx",
   "StrategyUploadModal.tsx",
   "TokenBadges.tsx",
@@ -20,6 +21,7 @@ const dashboardSourceFiles = [
   "TokenTable.tsx",
   "TradeTicket.tsx",
   "WalletUnavailableToast.tsx",
+  "executionModePresentation.ts",
   "navigation.ts",
   "types.ts",
   "useDashboardLayout.ts",
@@ -30,13 +32,11 @@ const dashboardSourceFiles = [
   "views/AlertsView.tsx",
   "views/ControlsView.tsx",
   "views/DashboardSectionView.tsx",
-  "views/InitialApprovalView.tsx",
   "views/OrdersView.tsx",
   "views/PositionsView.tsx",
   "views/ReplaysView.tsx",
   "views/SectionViewPrimitives.tsx",
   "views/StrategiesView.tsx",
-  "views/WatchlistView.tsx",
 ];
 
 async function readDashboardSources() {
@@ -79,18 +79,20 @@ test("server-renders the Soldisco discovery console", async () => {
   const html = await response.text();
   assert.match(html, /<title>SolDisco — Solana Discovery Console<\/title>/i);
   assert.match(html, /SOLDISCO/);
-  assert.match(html, /All coins/);
+  assert.match(html, /Discovery/);
   assert.match(html, /DISCOVERY STOPPED/);
-  assert.match(html, /Start the stream when you are ready to receive candidates/);
+  assert.match(html, /Start the stream when you are ready to screen candidates/);
+  assert.match(html, /Pending/);
+  assert.match(html, /Approved/);
+  assert.match(html, /Rejected/);
+  assert.match(html, /Flow rate/);
+  assert.match(html, /Rejection log/);
   assert.match(html, /No strategy active/);
-  assert.match(html, /Position data unavailable/);
   assert.match(html, /Resize navigation/);
   assert.match(html, /Resize token inspector/);
-  assert.match(html, /Resize positions tray/);
+  assert.doesNotMatch(html, /Resize positions tray/);
   const views = [
-    ["token-stream", "Token stream"],
-    ["initial-approval", "Initial approval"],
-    ["watchlist", "Watchlist"],
+    ["discovery", "Discovery"],
     ["positions", "Positions"],
     ["orders", "Orders"],
     ["alerts", "Alerts"],
@@ -109,13 +111,22 @@ test("server-renders the Soldisco discovery console", async () => {
   assert.equal((html.match(/aria-current="page"/g) ?? []).length, 1);
   assert.match(
     html,
-    /<button(?=[^>]*id="nav-token-stream")(?=[^>]*aria-current="page")[^>]*>/,
+    /<button(?=[^>]*id="nav-discovery")(?=[^>]*aria-current="page")[^>]*>/,
   );
   assert.match(html, /id="dashboard-view"/);
   assert.match(html, /id="view-title"/);
   assert.match(html, /Start stream/);
   assert.match(html, /id="stream-status"[^>]*aria-live="polite"/);
   assert.match(html, /Stream stopped/);
+  assert.doesNotMatch(
+    html,
+    /Reset panel sizes|↺ Layout|Local workspace|Development build/,
+  );
+  assert.doesNotMatch(html, />Inactive</);
+  assert.doesNotMatch(
+    html,
+    /Connect wallet|wallet connection|wallet-backed|live holdings/i,
+  );
   assert.doesNotMatch(
     html,
     /DEMO ENVIRONMENT|Fictional market data|Demo fixture|System healthy|Updated now|fixture source/i,
@@ -128,13 +139,14 @@ test("server-renders the Soldisco discovery console", async () => {
 });
 
 test("keeps empty trackers and execution boundaries explicit", async () => {
-  const [sources, page, layout, packageJson, styles] =
+  const [sources, page, layout, packageJson, styles, uiContract] =
     await Promise.all([
       readDashboardSources(),
       readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
       readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
       readFile(new URL("../package.json", import.meta.url), "utf8"),
       readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+      readFile(new URL("../../../packages/ui/src/index.ts", import.meta.url), "utf8"),
     ]);
   const dashboard = sources["DiscoveryDashboard.tsx"];
   const allDashboardSource = Object.values(sources).join("\n");
@@ -146,7 +158,14 @@ test("keeps empty trackers and execution boundaries explicit", async () => {
     allDashboardSource,
     /No route, quote, wallet, or execution service is connected/,
   );
-  assert.match(allDashboardSource, /Review \{side\.toLowerCase\(\)\}/);
+  assert.match(
+    sources["executionModePresentation.ts"],
+    /Record paper \$\{side\} · unavailable/,
+  );
+  assert.match(
+    sources["executionModePresentation.ts"],
+    /Review \$\{side\} · Live mode/,
+  );
   assert.match(sources["useDashboardLayout.ts"], /soldisco\.layout\.v1/);
   assert.match(allDashboardSource, /role="separator"/);
   assert.match(sources["inspector/RiskTab.tsx"], /token\.checks\.length/);
@@ -156,12 +175,54 @@ test("keeps empty trackers and execution boundaries explicit", async () => {
     /onClick=\{\(\) => onOpenView\(item\.id\)\}/,
   );
   assert.match(dashboard, /setStreamRunning\(\(running\) => !running\)/);
+  assert.match(
+    dashboard,
+    /initialTradeDrafts: Record<ExecutionMode, TradeDraft>/,
+  );
+  assert.match(dashboard, /const tradeDraft = tradeDrafts\[mode\]/);
+  assert.match(dashboard, /\[mode\]: \{ \.\.\.current\[mode\], side \}/);
+  assert.match(dashboard, /\[mode\]: \{ \.\.\.current\[mode\], amount \}/);
   assert.doesNotMatch(allDashboardSource, /item\.active/);
   assert.match(allDashboardSource, /disabled/);
-  assert.match(sources["views/InitialApprovalView.tsx"], /No first-pass results/);
-  assert.match(sources["views/WatchlistView.tsx"], /Watchlist is empty/);
-  assert.match(sources["views/PositionsView.tsx"], /Position data unavailable/);
-  assert.match(sources["views/OrdersView.tsx"], /Order data unavailable/);
+  assert.match(sources["DiscoveryCounters.tsx"], /summary\.pending/);
+  assert.match(sources["DiscoveryCounters.tsx"], /summary\.approved/);
+  assert.match(sources["DiscoveryCounters.tsx"], /summary\.rejected/);
+  assert.match(sources["RejectionLog.tsx"], /Initial-screen failures/);
+  assert.match(sources["TokenTable.tsx"], /approvedTokens\.map/);
+  assert.doesNotMatch(sources["TokenTable.tsx"], /<th>First pass<\/th>/);
+  assert.match(
+    sources["executionModePresentation.ts"],
+    /No paper positions recorded/,
+  );
+  assert.match(
+    sources["executionModePresentation.ts"],
+    /Live position data unavailable/,
+  );
+  assert.match(
+    sources["executionModePresentation.ts"],
+    /No paper orders recorded/,
+  );
+  assert.match(
+    sources["executionModePresentation.ts"],
+    /Live order data unavailable/,
+  );
+  assert.match(
+    sources["executionModePresentation.ts"],
+    /Paper:[\s\S]*requiresWallet: false/,
+  );
+  assert.match(
+    sources["executionModePresentation.ts"],
+    /Live:[\s\S]*requiresWallet: true/,
+  );
+  assert.match(sources["DashboardTopbar.tsx"], /mode === "Live"/);
+  assert.match(
+    sources["TradeTicket.tsx"],
+    /presentation\.requiresWallet/,
+  );
+  assert.match(
+    sources["views/PositionsView.tsx"],
+    /presentation\.requiresWallet/,
+  );
   assert.match(sources["views/AlertsView.tsx"], /No alerts configured/);
   assert.match(sources["views/StrategiesView.tsx"], /No validated strategies/);
   assert.match(sources["views/ReplaysView.tsx"], /No replay data/);
@@ -182,7 +243,38 @@ test("keeps empty trackers and execution boundaries explicit", async () => {
     styles,
     /token-logo--(?:luma|orbit|pebble|blip|tidal|nova|moss|pixel)/i,
   );
+  assert.doesNotMatch(allDashboardSource, /Add to watchlist|Watchlist/);
+  assert.doesNotMatch(allDashboardSource, /PositionsTray|positions-tray/);
+  assert.doesNotMatch(
+    allDashboardSource,
+    /onResetLayout|resetLayout|layout-reset|strategy-control__state|sidebar__footer/,
+  );
+  assert.doesNotMatch(
+    allDashboardSource,
+    /Reset panel sizes|↺ Layout|Local workspace|Development build/,
+  );
+  assert.doesNotMatch(styles, /layout-reset|strategy-control__state|sidebar__footer/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
+  assert.match(
+    uiContract,
+    /mode: "PAPER";[\s\S]*requiresWalletConfirmation: false/,
+  );
+  assert.match(
+    uiContract,
+    /mode: "LIVE";[\s\S]*requiresWalletConfirmation: true/,
+  );
+  assert.match(
+    uiContract,
+    /type HeldPositionViewModel =[\s\S]*mode: "PAPER"[\s\S]*mode: "LIVE"/,
+  );
+  assert.match(
+    uiContract,
+    /executionMode: "PAPER";[\s\S]*Extract<TradeTicketViewModel, \{ mode: "PAPER" \}>/,
+  );
+  assert.match(
+    uiContract,
+    /executionMode: "LIVE";[\s\S]*Extract<TradeTicketViewModel, \{ mode: "LIVE" \}>/,
+  );
 
   await assert.rejects(access(new URL("../app/_sites-preview", import.meta.url)));
   await assert.rejects(
@@ -191,6 +283,13 @@ test("keeps empty trackers and execution boundaries explicit", async () => {
   await assert.rejects(
     access(new URL("../app/components/DashboardSectionView.tsx", import.meta.url)),
   );
+  for (const removedPath of [
+    "PositionsTray.tsx",
+    "views/InitialApprovalView.tsx",
+    "views/WatchlistView.tsx",
+  ]) {
+    await assert.rejects(access(new URL(removedPath, dashboardRoot)));
+  }
   await access(new URL(".openai/hosting.json", webRoot));
 });
 
@@ -213,8 +312,6 @@ test("keeps dashboard UI split across focused modules", async () => {
   }
 
   for (const path of [
-    "views/InitialApprovalView.tsx",
-    "views/WatchlistView.tsx",
     "views/PositionsView.tsx",
     "views/OrdersView.tsx",
     "views/AlertsView.tsx",

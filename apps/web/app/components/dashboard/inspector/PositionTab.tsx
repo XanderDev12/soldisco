@@ -1,18 +1,26 @@
-import type { Token } from "../types";
+import { executionModePresentation } from "../executionModePresentation";
+import type { ExecutionMode, Token } from "../types";
 
 export interface PositionTabProps {
   token: Token;
+  mode: ExecutionMode;
   onViewTrade: () => void;
 }
 
-export function PositionTab({ token, onViewTrade }: PositionTabProps) {
+export function PositionTab({
+  token,
+  mode,
+  onViewTrade,
+}: PositionTabProps) {
+  const presentation = executionModePresentation[mode].inspectorPosition;
+
   return (
     <div className="empty-position">
       <span className="empty-position__icon">◎</span>
-      <h3>Position data unavailable</h3>
-      <p>Connect a wallet to load holdings for {token.symbol}.</p>
+      <h3>{presentation.emptyTitle}</h3>
+      <p>{presentation.emptyDetail(token.symbol)}</p>
       <button type="button" onClick={onViewTrade}>
-        View trade controls
+        {presentation.action}
       </button>
     </div>
   );

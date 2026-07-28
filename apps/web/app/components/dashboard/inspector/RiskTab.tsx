@@ -38,23 +38,11 @@ export function RiskTab({ token }: RiskTabProps) {
           <span>{token.checks.length} checks</span>
         </div>
         <div className="check-list">
-          {token.checks.map((check, index) => (
+          {token.checks.map((check) => (
             <div key={check}>
-              <span
-                className={
-                  token.status === "Rejected" && index > 0
-                    ? "check-fail"
-                    : "check-pass"
-                }
-              >
-                {token.status === "Rejected" && index > 0 ? "!" : "✓"}
-              </span>
+              <span className="check-pass">✓</span>
               <span>{check}</span>
-              <small>
-                {token.status === "Rejected" && index > 0
-                  ? "Flagged"
-                  : "Passed"}
-              </small>
+              <small>Passed</small>
             </div>
           ))}
         </div>

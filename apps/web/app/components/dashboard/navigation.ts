@@ -13,9 +13,7 @@ export const navGroups = [
   {
     label: "DISCOVERY",
     items: [
-      { icon: "⌁", name: "Token stream", id: "token-stream" },
-      { icon: "✓", name: "Initial approval", id: "initial-approval" },
-      { icon: "◇", name: "Watchlist", id: "watchlist" },
+      { icon: "⌁", name: "Discovery", id: "discovery" },
     ],
   },
   {

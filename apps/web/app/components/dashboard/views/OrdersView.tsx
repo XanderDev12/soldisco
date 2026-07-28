@@ -1,21 +1,29 @@
+import { executionModePresentation } from "../executionModePresentation";
+import type { ExecutionMode } from "../types";
 import { EmptyTable, SectionHeader } from "./SectionViewPrimitives";
 
-export function OrdersView() {
+type OrdersViewProps = {
+  mode: ExecutionMode;
+};
+
+export function OrdersView({ mode }: OrdersViewProps) {
+  const content = executionModePresentation[mode].orders;
+
   return (
     <>
       <SectionHeader
-        eyebrow="ORDER ACTIVITY"
-        title="Orders"
-        description="Review order intent and submission outcomes when execution is connected."
-        stats={["OPEN", "COMPLETED", "FAILED"]}
+        eyebrow={content.eyebrow}
+        title={content.title}
+        description={content.description}
+        stats={content.stats}
       />
       <div className="section-view__body">
         <EmptyTable
-          title="Order records"
-          detail="Execution service not connected"
-          columns={["Token", "Side", "Mode", "Amount", "Status", "Submitted"]}
-          emptyTitle="Order data unavailable"
-          emptyDetail="No execution service is connected."
+          title={content.recordTitle}
+          detail={content.recordDetail}
+          columns={content.columns}
+          emptyTitle={content.emptyTitle}
+          emptyDetail={content.emptyDetail}
         />
       </div>
     </>

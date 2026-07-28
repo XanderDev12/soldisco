@@ -14,7 +14,6 @@ const layoutStorageKey = "soldisco.layout.v1";
 export const defaultLayout: LayoutPreferences = {
   sidebar: 224,
   inspector: 354,
-  tray: 64,
 };
 
 export const layoutLimits: Record<
@@ -23,7 +22,6 @@ export const layoutLimits: Record<
 > = {
   sidebar: { min: 180, max: 340 },
   inspector: { min: 290, max: 560 },
-  tray: { min: 56, max: 240 },
 };
 
 function clampLayoutValue(key: LayoutKey, value: number) {
@@ -34,7 +32,7 @@ function clampLayoutValue(key: LayoutKey, value: number) {
 function isStoredLayout(value: unknown): value is LayoutPreferences {
   if (!value || typeof value !== "object") return false;
 
-  return (["sidebar", "inspector", "tray"] as const).every(
+  return (["sidebar", "inspector"] as const).every(
     (key) => typeof (value as Record<string, unknown>)[key] === "number",
   );
 }
@@ -43,7 +41,6 @@ export function useDashboardLayout() {
   const [layout, setLayout] = useState<LayoutPreferences>(defaultLayout);
   const [layoutLoaded, setLayoutLoaded] = useState(false);
   const [activeResize, setActiveResize] = useState<LayoutKey | null>(null);
-  const [expandedTraySize, setExpandedTraySize] = useState(160);
 
   useEffect(() => {
     const loadLayout = window.setTimeout(() => {
@@ -58,7 +55,6 @@ export function useDashboardLayout() {
                 "inspector",
                 parsedLayout.inspector,
               ),
-              tray: clampLayoutValue("tray", parsedLayout.tray),
             });
           }
         }
@@ -94,19 +90,16 @@ export function useDashboardLayout() {
   ) {
     if (event.button !== 0) return;
 
-    const startCoordinate = key === "tray" ? event.clientY : event.clientX;
+    const startCoordinate = event.clientX;
     const startValue = layout[key];
-    const cursor = key === "tray" ? "row-resize" : "col-resize";
 
     event.preventDefault();
     setActiveResize(key);
-    document.documentElement.style.cursor = cursor;
+    document.documentElement.style.cursor = "col-resize";
     document.documentElement.style.userSelect = "none";
 
     const handlePointerMove = (pointerEvent: PointerEvent) => {
-      const coordinate =
-        key === "tray" ? pointerEvent.clientY : pointerEvent.clientX;
-      const movement = coordinate - startCoordinate;
+      const movement = pointerEvent.clientX - startCoordinate;
       const nextValue =
         key === "sidebar" ? startValue + movement : startValue - movement;
       setLayoutValue(key, nextValue);
@@ -139,12 +132,9 @@ export function useDashboardLayout() {
     if (key === "sidebar") {
       if (event.key === "ArrowLeft") nextValue = layout[key] - step;
       if (event.key === "ArrowRight") nextValue = layout[key] + step;
-    } else if (key === "inspector") {
+    } else {
       if (event.key === "ArrowLeft") nextValue = layout[key] + step;
       if (event.key === "ArrowRight") nextValue = layout[key] - step;
-    } else {
-      if (event.key === "ArrowUp") nextValue = layout[key] + step;
-      if (event.key === "ArrowDown") nextValue = layout[key] - step;
     }
 
     if (nextValue === null) return;
@@ -152,26 +142,9 @@ export function useDashboardLayout() {
     setLayoutValue(key, nextValue);
   }
 
-  function resetLayout() {
-    setLayout(defaultLayout);
-  }
-
-  const trayExpanded = layout.tray > defaultLayout.tray + 8;
-
-  function toggleTray() {
-    if (trayExpanded) {
-      setExpandedTraySize(layout.tray);
-      setLayoutValue("tray", defaultLayout.tray);
-      return;
-    }
-
-    setLayoutValue("tray", expandedTraySize);
-  }
-
   const layoutStyle = {
     "--sidebar-pref": `${layout.sidebar}px`,
     "--inspector-pref": `${layout.inspector}px`,
-    "--tray-pref": `${layout.tray}px`,
   } as CSSProperties;
 
   return {
@@ -180,9 +153,6 @@ export function useDashboardLayout() {
     handleResizeKey,
     layout,
     layoutStyle,
-    resetLayout,
     setLayoutValue,
-    toggleTray,
-    trayExpanded,
   };
 }

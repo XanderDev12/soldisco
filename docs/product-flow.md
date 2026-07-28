@@ -25,16 +25,18 @@
 
 ## Site destinations
 
-- **Token Stream** — every incoming candidate and its current projected status
-- **Initial Approval** — first-pass checks and rejection reason codes
-- **Watchlist** — candidates retained for manual or strategy monitoring
+- **Discovery** — approved candidates only, with screening counters and a
+  compact rejection-reason log
 - **Inspector** — overview, risk evidence, signals, trade, and position details
 - **Strategies** — upload, validate, replay, activate, and toggle versions
-- **Orders** — paper and live proposal and transaction lifecycle
-- **Positions** — reconciled holdings, exposure, PnL, and exit controls
+- **Orders** — one destination with mode-specific Paper records or Live
+  transaction lifecycle
+- **Positions** — one destination with separate Paper ledger projections or
+  Live reconciled holdings, exposure, PnL, and exit controls
 - **Alerts** — risk changes, matches, stale data, outages, and execution events
 - **Replays** — historical evaluation with original information boundaries
 - **Controls** — stream state, source health, operating mode, and kill switches
 
 The UI receives read-only projections. It does not define domain truth, perform
-scoring, or infer fills.
+scoring, or infer fills. Paper mode never presents wallet connection as a
+dependency; wallet controls belong only to Live mode.

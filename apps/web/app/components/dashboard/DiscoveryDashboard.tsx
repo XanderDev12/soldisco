@@ -1,8 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { DashboardTopbar } from "./DashboardTopbar";
-import { PositionsTray } from "./PositionsTray";
 import { Sidebar } from "./Sidebar";
 import { StrategyUploadModal } from "./StrategyUploadModal";
 import { TokenStreamView } from "./TokenStreamView";
@@ -10,8 +9,9 @@ import type {
   DashboardView,
   ExecutionMode,
   InspectorTab,
+  RejectionLogEntry,
+  ScreeningSummary,
   Token,
-  TokenFilter,
   TradeSide,
 } from "./types";
 import {
@@ -22,45 +22,52 @@ import {
 import { WalletUnavailableToast } from "./WalletUnavailableToast";
 import { DashboardSectionView } from "./views/DashboardSectionView";
 
-const tokens: Token[] = [];
+const approvedTokens: Token[] = [];
+const rejectionLog: RejectionLogEntry[] = [];
+const screeningSummary: ScreeningSummary = {
+  pending: 0,
+  approved: approvedTokens.length,
+  rejected: rejectionLog.length,
+  ratePerMinute: null,
+};
+
+type TradeDraft = {
+  side: TradeSide;
+  amount: string;
+};
+
+const initialTradeDrafts: Record<ExecutionMode, TradeDraft> = {
+  Paper: { side: "Buy", amount: "0.10" },
+  Live: { side: "Buy", amount: "0.10" },
+};
 
 export function DiscoveryDashboard() {
   const [activeView, setActiveView] =
-    useState<DashboardView>("token-stream");
+    useState<DashboardView>("discovery");
   const [streamRunning, setStreamRunning] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(
-    tokens[0]?.id ?? null,
+    approvedTokens[0]?.id ?? null,
   );
-  const [filter, setFilter] = useState<TokenFilter>("All");
   const [mode, setMode] = useState<ExecutionMode>("Paper");
   const [inspectorTab, setInspectorTab] =
     useState<InspectorTab>("Overview");
   const [sideNavOpen, setSideNavOpen] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [walletMessage, setWalletMessage] = useState(false);
-  const [orderSide, setOrderSide] = useState<TradeSide>("Buy");
-  const [orderAmount, setOrderAmount] = useState("0.10");
+  const [tradeDrafts, setTradeDrafts] =
+    useState(initialTradeDrafts);
   const {
     activeResize,
     beginResize,
     handleResizeKey,
     layout,
     layoutStyle,
-    resetLayout,
     setLayoutValue,
-    toggleTray,
-    trayExpanded,
   } = useDashboardLayout();
 
   const selectedToken =
-    tokens.find((token) => token.id === selectedId) ?? null;
-  const visibleTokens = useMemo(
-    () =>
-      filter === "All"
-        ? tokens
-        : tokens.filter((token) => token.status === filter),
-    [filter],
-  );
+    approvedTokens.find((token) => token.id === selectedId) ?? null;
+  const tradeDraft = tradeDrafts[mode];
 
   function openView(view: DashboardView) {
     setActiveView(view);
@@ -82,6 +89,25 @@ export function DiscoveryDashboard() {
 
   function toggleStream() {
     setStreamRunning((running) => !running);
+  }
+
+  function changeMode(nextMode: ExecutionMode) {
+    setMode(nextMode);
+    if (nextMode === "Paper") setWalletMessage(false);
+  }
+
+  function changeOrderSide(side: TradeSide) {
+    setTradeDrafts((current) => ({
+      ...current,
+      [mode]: { ...current[mode], side },
+    }));
+  }
+
+  function changeOrderAmount(amount: string) {
+    setTradeDrafts((current) => ({
+      ...current,
+      [mode]: { ...current[mode], amount },
+    }));
   }
 
   return (
@@ -111,20 +137,18 @@ export function DiscoveryDashboard() {
           mode={mode}
           onOpenMobileNav={() => setSideNavOpen(true)}
           onToggleStream={toggleStream}
-          onResetLayout={resetLayout}
           onUpload={() => setUploadOpen(true)}
-          onModeChange={setMode}
+          onModeChange={changeMode}
           onWallet={showWalletUnavailable}
         />
 
-        {activeView === "token-stream" ? (
+        {activeView === "discovery" ? (
           <TokenStreamView
-            tokens={tokens}
-            visibleTokens={visibleTokens}
+            approvedTokens={approvedTokens}
+            screeningSummary={screeningSummary}
+            rejectionLog={rejectionLog}
             selectedToken={selectedToken}
             streamRunning={streamRunning}
-            filter={filter}
-            onFilterChange={setFilter}
             onSelectToken={selectToken}
             onOpenControls={() => openView("controls")}
             inspectorSize={layout.inspector}
@@ -141,10 +165,10 @@ export function DiscoveryDashboard() {
             }
             inspectorTab={inspectorTab}
             onInspectorTabChange={setInspectorTab}
-            orderSide={orderSide}
-            onOrderSideChange={setOrderSide}
-            orderAmount={orderAmount}
-            onOrderAmountChange={setOrderAmount}
+            orderSide={tradeDraft.side}
+            onOrderSideChange={changeOrderSide}
+            orderAmount={tradeDraft.amount}
+            onOrderAmountChange={changeOrderAmount}
             mode={mode}
             onWallet={showWalletUnavailable}
           />
@@ -154,27 +178,14 @@ export function DiscoveryDashboard() {
             streamRunning={streamRunning}
             mode={mode}
             onToggleStream={toggleStream}
-            onModeChange={setMode}
+            onModeChange={changeMode}
             onWallet={showWalletUnavailable}
             onUpload={() => setUploadOpen(true)}
-            onResetLayout={resetLayout}
           />
         )}
-
-        <PositionsTray
-          mode={mode}
-          trayExpanded={trayExpanded}
-          layout={layout}
-          layoutLimits={layoutLimits}
-          defaultLayout={defaultLayout}
-          onToggleTray={toggleTray}
-          onBeginResize={beginResize}
-          onResizeKey={handleResizeKey}
-          onSetLayoutValue={setLayoutValue}
-        />
       </section>
 
-      {walletMessage && <WalletUnavailableToast />}
+      {mode === "Live" && walletMessage && <WalletUnavailableToast />}
       {uploadOpen && (
         <StrategyUploadModal onClose={() => setUploadOpen(false)} />
       )}

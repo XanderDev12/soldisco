@@ -46,7 +46,7 @@ export function TokenInspector({
       <aside id="inspector-panel" className="inspector">
         <div className="empty-state">
           No token selected. The inspector will populate when the stream
-          receives its first token.
+          receives its first approved token.
         </div>
       </aside>
     );
@@ -69,7 +69,6 @@ export function TokenInspector({
           </div>
         </div>
         <div className="inspector__head-actions">
-          <button type="button" aria-label="Add to watchlist">☆</button>
           <button type="button" aria-label="More actions">···</button>
         </div>
         <div className="price-block">
@@ -113,15 +112,13 @@ export function TokenInspector({
         {tab === "Position" && (
           <PositionTab
             token={token}
+            mode={mode}
             onViewTrade={() => onTabChange("Trade")}
           />
         )}
       </div>
 
       <div className="inspector__actions">
-        <button type="button" className="secondary-action">
-          Add to watchlist
-        </button>
         <button
           type="button"
           className="primary-action"

@@ -1,9 +1,16 @@
 # UI contracts
 
 Framework-neutral view-model shapes for the stream command center, strategy
-workspace, trade ticket, and held-position tray. This package contains no wallet or
-execution implementation.
+workspace, trade ticket, and positions workspace. This package contains no
+wallet or execution implementation.
 
 The web skeleton still uses a local empty token view model. Live data will
 replace it through an explicit API-to-view projection into this boundary rather
-than exposing backend domain records directly.
+than exposing backend domain records directly. The Discovery projection
+contains approved rows only; pending and rejected candidates use compact
+screening-summary and rejection-log projections.
+
+Paper and Live tickets are a discriminated union. Paper tickets can be recorded
+without wallet confirmation, while Live tickets retain signing and submission
+states. Position projections and the outer command-center model carry the same
+explicit mode boundary, so contradictory mode combinations do not type-check.

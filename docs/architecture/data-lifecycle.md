@@ -72,9 +72,10 @@ Snapshot families include:
 
 ## Projections
 
-Read models derive the token stream, inspector, strategies, alerts, orders, and
-positions from recorded facts. Component statuses remain independent. The
-single stage shown by the UI is derived from those statuses and can be rebuilt.
+Read models derive the approved-only discovery feed, screening counters,
+rejection log, inspector, strategies, alerts, orders, and positions from
+recorded facts. Component statuses remain independent. The single stage shown
+by the UI is derived from those statuses and can be rebuilt.
 
 ## Replay
 
