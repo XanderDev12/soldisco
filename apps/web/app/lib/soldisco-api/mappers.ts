@@ -77,7 +77,12 @@ export function mapDiscoveryToken(
     quoteMint: token.quote_mint,
     sourceProgram: sourceLabels[token.source_program],
     stage: token.stage,
-    stageLabel: token.stage === "OBSERVED" ? "Observed" : "Approved",
+    stageLabel:
+      token.stage === "OBSERVED"
+        ? "Observed"
+        : token.stage === "QUALIFIED"
+          ? "Qualified"
+          : "Approved",
     lastEventKind: formatEventKind(token.last_event_kind),
     observedSlot: token.observed_slot,
     firstObservedAt: formatInstant(token.first_observed_unix_ms),
@@ -91,6 +96,7 @@ export function mapDiscoveryToken(
       baseVolumeUnits: token.activity.base_volume_units,
       quoteVolumeUnits: token.activity.quote_volume_units,
     },
+    qualification: token.qualification,
     riskScore: token.risk_score,
     opportunityScore: token.opportunity_score,
   };
@@ -111,6 +117,11 @@ export function mapDiscoverySnapshot(
       pending: snapshot.counters.pending,
       approved: snapshot.counters.approved,
       rejected: snapshot.counters.rejected,
+      qualified: snapshot.counters.qualified,
+      qualificationPending: snapshot.counters.qualification_pending,
+      qualificationRejected: snapshot.counters.qualification_rejected,
+      qualificationUnknown: snapshot.counters.qualification_unknown,
+      processingFailures: snapshot.counters.processing_failures,
       ratePerMinute: snapshot.counters.flow_per_minute,
     },
     rejectionReasons: snapshot.rejection_reasons.map((reason) => ({

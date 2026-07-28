@@ -10,12 +10,14 @@ mod discovery;
 mod discovery_activity;
 mod discovery_storage;
 mod discovery_validation;
+mod discovery_windows;
 mod error;
 mod markets;
 mod network_binding;
 mod observations;
 mod prefilter_defaults;
 mod pump_swap;
+mod qualification_defaults;
 mod quarantine;
 mod retention;
 mod screening;
@@ -32,9 +34,15 @@ use sqlx::{
 pub use checkpoints::RecoveryCheckpoint;
 pub use collection_gaps::{CollectionGap, CollectionPosition, NewCollectionGap};
 pub use discovery::{DiscoveryObservation, DiscoveryProjectionMutation, DiscoveryRejection};
+pub use discovery_windows::{
+    DiscoveryWindowProjectionReadiness, DiscoveryWindowRecord, FinalizeDiscoveryWindow,
+    MARKET_WINDOW_FEATURE_VERSION, NewDiscoveryWindow, OpenedDiscoveryWindow, WindowTargetKind,
+    build_discovery_window_finalization,
+};
 pub use error::PersistenceError;
 pub use prefilter_defaults::StoredPrefilterDefaults;
 pub use pump_swap::PumpSwapPool;
+pub use qualification_defaults::StoredQualificationDefaults;
 pub use quarantine::{
     IntakeQuarantineRecord, MAX_QUARANTINE_EVIDENCE_BASE64_BYTES, StoredIntakeQuarantine,
 };
@@ -118,6 +126,7 @@ mod tests {
         let pipeline = include_str!("../migrations/0002_durable_discovery_pipeline.sql");
         let hardening = include_str!("../migrations/0003_persistence_hardening.sql");
         let prefilter_defaults = include_str!("../migrations/0004_prefilter_defaults.sql");
+        let qualification = include_str!("../migrations/0005_durable_qualification_windows.sql");
 
         assert!(foundation.contains("signature"));
         assert!(foundation.contains("instruction_index"));
@@ -142,5 +151,10 @@ mod tests {
             !prefilter_defaults.contains("INSERT INTO prefilter_defaults"),
             "validated environment values seed this table exactly once at runtime"
         );
+        assert!(qualification.contains("CREATE TABLE discovery_windows"));
+        assert!(qualification.contains("CREATE TABLE discovery_window_snapshots"));
+        assert!(qualification.contains("CREATE TABLE qualification_defaults_revisions"));
+        assert!(qualification.contains("CREATE TABLE qualification_assessments"));
+        assert!(qualification.contains("'QUALIFIED_ONLY'"));
     }
 }

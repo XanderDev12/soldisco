@@ -5,11 +5,17 @@ import {
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import type { LayoutKey, LayoutPreferences } from "./types";
 
-const layoutStorageKey = "soldisco.layout.v1";
+export const layoutStorageKey = "soldisco.layout.v1";
+
+type LayoutPreferenceStorage = Pick<
+  Storage,
+  "getItem" | "removeItem" | "setItem"
+>;
 
 export const defaultLayout: LayoutPreferences = {
   sidebar: 224,
@@ -37,32 +43,85 @@ function isStoredLayout(value: unknown): value is LayoutPreferences {
   );
 }
 
+function removeInvalidLayoutPreference(storage: LayoutPreferenceStorage) {
+  try {
+    storage.removeItem(layoutStorageKey);
+  } catch {
+    // A blocked storage provider must not prevent the dashboard from loading.
+  }
+}
+
+export function readDashboardLayoutPreference(
+  storage: LayoutPreferenceStorage,
+): LayoutPreferences {
+  try {
+    const savedLayout = storage.getItem(layoutStorageKey);
+    if (savedLayout === null) return defaultLayout;
+
+    const parsedLayout: unknown = JSON.parse(savedLayout);
+    if (!isStoredLayout(parsedLayout)) {
+      removeInvalidLayoutPreference(storage);
+      return defaultLayout;
+    }
+
+    return {
+      sidebar: clampLayoutValue("sidebar", parsedLayout.sidebar),
+      inspector: clampLayoutValue("inspector", parsedLayout.inspector),
+    };
+  } catch {
+    removeInvalidLayoutPreference(storage);
+    return defaultLayout;
+  }
+}
+
+export function writeDashboardLayoutPreference(
+  storage: Pick<LayoutPreferenceStorage, "setItem">,
+  layout: LayoutPreferences,
+): void {
+  try {
+    storage.setItem(layoutStorageKey, JSON.stringify(layout));
+  } catch {
+    // The in-memory layout remains usable when storage is full or blocked.
+  }
+}
+
+export function flushDashboardLayoutPreference(
+  storage: Pick<LayoutPreferenceStorage, "setItem">,
+  layout: LayoutPreferences,
+): void {
+  writeDashboardLayoutPreference(storage, layout);
+}
+
+function readBrowserLayoutPreference(): LayoutPreferences {
+  try {
+    return readDashboardLayoutPreference(window.localStorage);
+  } catch {
+    return defaultLayout;
+  }
+}
+
+function flushBrowserLayoutPreference(layout: LayoutPreferences): void {
+  try {
+    flushDashboardLayoutPreference(window.localStorage, layout);
+  } catch {
+    // Accessing localStorage itself can be blocked by browser policy.
+  }
+}
+
 export function useDashboardLayout() {
   const [layout, setLayout] = useState<LayoutPreferences>(defaultLayout);
   const [layoutLoaded, setLayoutLoaded] = useState(false);
   const [activeResize, setActiveResize] = useState<LayoutKey | null>(null);
+  const latestLayoutRef = useRef<LayoutPreferences>(defaultLayout);
+  const layoutLoadedRef = useRef(false);
 
   useEffect(() => {
     const loadLayout = window.setTimeout(() => {
-      try {
-        const savedLayout = window.localStorage.getItem(layoutStorageKey);
-        if (savedLayout) {
-          const parsedLayout: unknown = JSON.parse(savedLayout);
-          if (isStoredLayout(parsedLayout)) {
-            setLayout({
-              sidebar: clampLayoutValue("sidebar", parsedLayout.sidebar),
-              inspector: clampLayoutValue(
-                "inspector",
-                parsedLayout.inspector,
-              ),
-            });
-          }
-        }
-      } catch {
-        window.localStorage.removeItem(layoutStorageKey);
-      } finally {
-        setLayoutLoaded(true);
-      }
+      const savedLayout = readBrowserLayoutPreference();
+      latestLayoutRef.current = savedLayout;
+      setLayout(savedLayout);
+      layoutLoadedRef.current = true;
+      setLayoutLoaded(true);
     }, 0);
 
     return () => window.clearTimeout(loadLayout);
@@ -71,17 +130,32 @@ export function useDashboardLayout() {
   useEffect(() => {
     if (!layoutLoaded) return;
     const saveLayout = window.setTimeout(() => {
-      window.localStorage.setItem(layoutStorageKey, JSON.stringify(layout));
+      flushBrowserLayoutPreference(layout);
     }, 120);
 
     return () => window.clearTimeout(saveLayout);
   }, [layout, layoutLoaded]);
 
+  useEffect(() => {
+    function flushLatestLayout() {
+      if (!layoutLoadedRef.current) return;
+      flushBrowserLayoutPreference(latestLayoutRef.current);
+    }
+
+    window.addEventListener("pagehide", flushLatestLayout);
+    return () => {
+      window.removeEventListener("pagehide", flushLatestLayout);
+      flushLatestLayout();
+    };
+  }, []);
+
   function setLayoutValue(key: LayoutKey, value: number) {
-    setLayout((current) => ({
-      ...current,
+    const next = {
+      ...latestLayoutRef.current,
       [key]: clampLayoutValue(key, value),
-    }));
+    };
+    latestLayoutRef.current = next;
+    setLayout(next);
   }
 
   function beginResize(

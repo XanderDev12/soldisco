@@ -1845,7 +1845,9 @@ name = "soldisco-discovery-engine"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "soldisco-domain",
+ "thiserror",
 ]
 
 [[package]]
@@ -1864,6 +1866,7 @@ dependencies = [
  "serde",
  "serde_json",
  "soldisco-api-contracts",
+ "soldisco-discovery-engine",
  "soldisco-domain",
  "sqlx",
  "thiserror",

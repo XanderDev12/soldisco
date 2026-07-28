@@ -1,6 +1,7 @@
 import type {
   DiscoveryMode,
   DiscoveryStage,
+  DiscoveryWindowSummary,
   StreamStatus,
 } from "./contracts";
 import type { LiveConnectionStatus } from "./events";
@@ -58,13 +59,14 @@ export type DiscoveryTokenViewModel = {
   quoteMint: string | null;
   sourceProgram: string;
   stage: DiscoveryStage;
-  stageLabel: "Observed" | "Approved";
+  stageLabel: "Observed" | "Qualified" | "Approved";
   lastEventKind: string;
   observedSlot: number;
   firstObservedAt: string;
   lastObservedAt: string;
   latestSignature: string;
   activity: DiscoveryActivityViewModel;
+  qualification: DiscoveryWindowSummary | null;
   riskScore: number | null;
   opportunityScore: number | null;
 };
@@ -75,6 +77,11 @@ export type ScreeningSummaryViewModel = {
   pending: number | null;
   approved: number | null;
   rejected: number | null;
+  qualified: number | null;
+  qualificationPending: number | null;
+  qualificationRejected: number | null;
+  qualificationUnknown: number | null;
+  processingFailures: number | null;
   ratePerMinute: number | null;
 };
 

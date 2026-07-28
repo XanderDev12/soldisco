@@ -7,15 +7,16 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use soldisco_api_contracts::{PrefilterDefaults, StreamStatus};
 use soldisco_discovery_engine::ObservationWindowRegistry;
-use soldisco_domain::{MarketIdentity, Network, ObservationKey, SourceProgram, Venue};
+use soldisco_domain::{Network, ObservationKey, SourceProgram, Venue};
 use soldisco_persistence::{
-    Database, IntakeQuarantineRecord, MAX_QUARANTINE_EVIDENCE_BASE64_BYTES, PersistenceError,
-    PumpSwapPool,
+    Database, IntakeQuarantineRecord, MAX_QUARANTINE_EVIDENCE_BASE64_BYTES, NewDiscoveryWindow,
+    PersistenceError, PumpSwapPool, StoredPrefilterDefaults, WindowTargetKind,
 };
 use soldisco_solana_rpc::{RpcError, SolanaHttpClient, SolanaPubsubClient};
 use soldisco_source_pump::{
     DECODER_VERSION, DecodeError, DecodedPumpEvent, PumpEvent, PumpProgram, decode_anchor_event,
     decode_cpi_event, decode_program_data_bytes, is_anchor_event_cpi,
+    is_pinned_event_discriminator,
 };
 use thiserror::Error;
 use tokio::{
@@ -43,6 +44,7 @@ use crate::{
         },
         normalization::{MarketRegistry, NormalizationError, normalize_pump_event},
         pending_activity::{PendingActivityAdmission, PendingActivityQueue},
+        qualification::{QualificationWorkerError, run_qualification_finalizer},
     },
     state::LiveEventBus,
 };
@@ -65,6 +67,9 @@ pub struct PipelineConfig {
     pub maximum_active_windows: usize,
     pub discovery_rpc_requests_per_second: u32,
     pub discovery_rpc_rate_limit_cooldown: Duration,
+    pub prefilter_revision: u64,
+    pub prefilter_values: PrefilterDefaults,
+    pub collector_run_id: String,
 }
 
 impl From<&Config> for PipelineConfig {
@@ -95,13 +100,17 @@ impl From<&Config> for PipelineConfig {
             maximum_active_windows: config.discovery_max_active_windows,
             discovery_rpc_requests_per_second: config.solana_discovery_rpc_requests_per_second,
             discovery_rpc_rate_limit_cooldown: config.solana_discovery_rpc_rate_limit_cooldown,
+            prefilter_revision: 1,
+            prefilter_values: config.prefilter_defaults(),
+            collector_run_id: String::new(),
         }
     }
 }
 
 impl PipelineConfig {
     #[must_use]
-    pub fn with_prefilter_defaults(&self, values: PrefilterDefaults) -> Self {
+    pub fn with_prefilter_defaults(&self, stored: StoredPrefilterDefaults) -> Self {
+        let values = stored.values;
         let mut next = self.clone();
         next.collector.maximum_discovery_age = Duration::from_millis(values.max_event_age_ms);
         next.collector.observation_window_duration =
@@ -114,6 +123,8 @@ impl PipelineConfig {
         next.discovery_rpc_requests_per_second = values.rpc_requests_per_second;
         next.discovery_rpc_rate_limit_cooldown =
             Duration::from_millis(values.rpc_rate_limit_cooldown_ms);
+        next.prefilter_revision = stored.revision;
+        next.prefilter_values = values;
         next
     }
 
@@ -164,6 +175,10 @@ pub enum PipelineError {
     UnexpectedTaskExit(&'static str),
     #[error("pipeline task failed to join: {0}")]
     Join(String),
+    #[error("durable observation-window lifecycle became inconsistent: {0}")]
+    WindowLifecycle(&'static str),
+    #[error(transparent)]
+    Qualification(#[from] QualificationWorkerError),
 }
 
 pub async fn spawn_pipeline(
@@ -316,21 +331,27 @@ async fn hydrate_market_registry(
             .load_discovery_markets(config.collector.network)
             .await?
             .into_iter()
-            .filter(|market| matches!(market.venue, Venue::PumpBondingCurve | Venue::PumpSwap)),
+            .filter(|market| market.venue == Venue::PumpBondingCurve),
     )?;
-    registry.register_all(
-        database
-            .load_pump_swap_pools(config.collector.network)
-            .await?
-            .into_iter()
-            .map(|pool| MarketIdentity {
-                network: pool.network,
-                mint: pool.base_mint,
-                venue: Venue::PumpSwap,
-                market_address: pool.pool_address,
-                quote_mint: Some(pool.quote_mint),
-            }),
-    )?;
+    for pool in database
+        .load_pump_swap_pools(config.collector.network)
+        .await?
+    {
+        let registered = registry.register_pump_swap_pool(
+            pool.network,
+            &pool.pool_address,
+            &pool.base_mint,
+            &pool.quote_mint,
+        )?;
+        if registered.is_none() {
+            tracing::warn!(
+                pool = %pool.pool_address,
+                source_base_mint = %pool.base_mint,
+                source_quote_mint = %pool.quote_mint,
+                "ignored a persisted PumpSwap pool without exactly one supported quote asset"
+            );
+        }
+    }
     Ok(registry)
 }
 
@@ -353,11 +374,16 @@ async fn run_pipeline(attempt: PipelineAttempt) -> Result<(), PipelineError> {
         http,
         pubsub,
         markets,
-        config,
+        mut config,
         discovery_rpc,
         status,
         cancellation,
     } = attempt;
+    config.collector_run_id = format!(
+        "soldisco-collector-{}-{}",
+        std::process::id(),
+        unix_time_millis()
+    );
     let (batch_sender, batch_receiver) = mpsc::channel(config.queue_capacity);
     let (connection_sender, mut connection_receiver) = mpsc::unbounded_channel();
     let (discovery_rpc_health_sender, mut discovery_rpc_health_receiver) =
@@ -418,6 +444,26 @@ async fn run_pipeline(attempt: PipelineAttempt) -> Result<(), PipelineError> {
         )
     });
 
+    let qualification_database = database.clone();
+    let qualification_events = events.clone();
+    let qualification_windows = observation_windows.clone();
+    let qualification_run_id = config.collector_run_id.clone();
+    let qualification_cancellation = cancellation.child_token();
+    tasks.spawn(async move {
+        (
+            "qualification-finalizer",
+            run_qualification_finalizer(
+                qualification_database,
+                qualification_events,
+                qualification_windows,
+                qualification_run_id,
+                qualification_cancellation,
+            )
+            .await
+            .map_err(PipelineError::from),
+        )
+    });
+
     let maintenance_database = database.clone();
     let maintenance_cancellation = cancellation.child_token();
     let maintenance_config = config.maintenance.clone();
@@ -458,6 +504,9 @@ async fn run_pipeline(attempt: PipelineAttempt) -> Result<(), PipelineError> {
         tokio::select! {
             () = cancellation.cancelled() => {
                 status.send_replace(StreamStatus::Stopping);
+                observation_windows.cancel_all_confirmed(
+                    soldisco_discovery_engine::WindowIncompleteReason::StreamStopped,
+                );
                 while tasks.join_next().await.is_some() {}
                 return Ok(());
             }
@@ -478,6 +527,10 @@ async fn run_pipeline(attempt: PipelineAttempt) -> Result<(), PipelineError> {
                     SourceConnectionState::Disconnected => {
                         ready_sources.remove(&update.source_program);
                         connection_failed = true;
+                        observation_windows.cancel_source_confirmed(
+                            update.source_program,
+                            soldisco_discovery_engine::WindowIncompleteReason::SourceDisconnected,
+                        );
                     }
                     SourceConnectionState::Connecting => {
                         ready_sources.remove(&update.source_program);
@@ -685,16 +738,28 @@ async fn process_and_record_batch(
     discovery_wake: &Notify,
     config: &PipelineConfig,
     recent_observations: &mut VecDeque<Instant>,
-    batch: ProgramLogBatch,
+    mut batch: ProgramLogBatch,
 ) -> Result<(), PipelineError> {
-    let inserted = process_batch(database, markets, &batch, config).await?;
-    for _ in 0..inserted {
+    let outcome = process_batch(database, markets, &batch, config).await?;
+    if !outcome.complete {
+        for token in &batch.window_tokens {
+            let _ =
+                token.mark_incomplete(soldisco_discovery_engine::WindowIncompleteReason::DecodeGap);
+        }
+    }
+    batch.mark_processing_succeeded();
+    for _ in 0..outcome.inserted {
         recent_observations.push_back(Instant::now());
     }
-    if inserted > 0 {
+    if outcome.inserted > 0 {
         discovery_wake.notify_one();
     }
     Ok(())
+}
+
+struct BatchProcessingOutcome {
+    inserted: usize,
+    complete: bool,
 }
 
 async fn process_batch(
@@ -702,13 +767,18 @@ async fn process_batch(
     markets: &MarketRegistry,
     batch: &ProgramLogBatch,
     config: &PipelineConfig,
-) -> Result<usize, PipelineError> {
+) -> Result<BatchProcessingOutcome, PipelineError> {
     let mut inserted = 0_usize;
+    let mut complete = batch.transaction_error.is_none();
+    let mut selected_events = 0_usize;
 
     if batch.transaction_error.is_none() {
         let mut decoded_events = Vec::new();
         for program in PUMP_PROGRAMS {
             let decoded_batch = decode_batch_events(batch, program)?;
+            if !decoded_batch.quarantines.is_empty() {
+                complete = false;
+            }
             for quarantine in decoded_batch.quarantines {
                 record_pipeline_quarantine(
                     database,
@@ -741,10 +811,12 @@ async fn process_batch(
             if !batch_selects_event(
                 batch,
                 &decoded.event,
+                config.collector.network,
                 config.collector.maximum_discovery_age,
             ) {
                 continue;
             }
+            selected_events = selected_events.saturating_add(1);
             let source_program = decoded.program.source_program();
             let coordinate = decoded.coordinate.clone();
             let retire_pump_mint = match &decoded.event {
@@ -773,6 +845,7 @@ async fn process_batch(
             ) {
                 Ok(normalized) => normalized,
                 Err(error @ NormalizationError::PumpMarketUnresolved(_)) => {
+                    complete = false;
                     record_pipeline_quarantine(
                         database,
                         config.collector.network,
@@ -786,6 +859,7 @@ async fn process_batch(
                     continue;
                 }
                 Err(error @ NormalizationError::PumpSwapMarketUnresolved(_)) => {
+                    complete = false;
                     record_pipeline_quarantine(
                         database,
                         config.collector.network,
@@ -799,6 +873,7 @@ async fn process_batch(
                     continue;
                 }
                 Err(error @ NormalizationError::QuoteMintMismatch { .. }) => {
+                    complete = false;
                     record_pipeline_quarantine(
                         database,
                         config.collector.network,
@@ -811,32 +886,132 @@ async fn process_batch(
                     .await?;
                     continue;
                 }
+                Err(error @ NormalizationError::UnsupportedPumpSwapPair { .. }) => {
+                    complete = false;
+                    record_pipeline_quarantine(
+                        database,
+                        config.collector.network,
+                        source_program,
+                        coordinate,
+                        "UNSUPPORTED_PUMP_SWAP_PAIR",
+                        error.to_string(),
+                        &event.raw_evidence,
+                    )
+                    .await?;
+                    continue;
+                }
+                Err(error @ NormalizationError::ZeroTradeAmount) => {
+                    complete = false;
+                    record_pipeline_quarantine(
+                        database,
+                        config.collector.network,
+                        source_program,
+                        coordinate,
+                        "ZERO_TRADE_AMOUNT",
+                        error.to_string(),
+                        &event.raw_evidence,
+                    )
+                    .await?;
+                    continue;
+                }
                 Err(error) => return Err(error.into()),
             };
 
-            if database.insert_observation(&normalized.observation).await? {
+            let matching_window_token = soldisco_discovery_engine::ObservationTarget::for_market(
+                &normalized.observation.market,
+            )
+            .and_then(|target| {
+                batch
+                    .window_tokens
+                    .iter()
+                    .find(|token| {
+                        token.target() == &target && token.is_open_at(batch.received_time_unix_ms)
+                    })
+                    .cloned()
+            });
+            let observation_inserted = if let Some(market) = &normalized.discovered_market {
+                let token =
+                    matching_window_token
+                        .as_ref()
+                        .ok_or(PipelineError::WindowLifecycle(
+                            "normalized discovery had no matching provisional token",
+                        ))?;
+                let qualification = database.load_qualification_defaults().await?;
+                let (target_kind, target_address) = window_target_parts(token.target());
+                let opened = database
+                    .open_discovery_window(
+                        &normalized.observation,
+                        &NewDiscoveryWindow {
+                            target_kind,
+                            target_address,
+                            opened_at_unix_ms: token.snapshot().opened_at_unix_ms,
+                            closes_at_unix_ms: token.snapshot().closes_at_unix_ms,
+                            collector_run_id: config.collector_run_id.clone(),
+                            prefilter_revision: config.prefilter_revision,
+                            prefilter_values: config.prefilter_values,
+                            qualification,
+                        },
+                    )
+                    .await?;
+                if opened.replayed {
+                    token.cancel_if_pending();
+                    tracing::debug!(
+                        window_id = opened.window_id,
+                        mint = %market.mint,
+                        "ignored a replayed discovery already handled by a durable window"
+                    );
+                    continue;
+                }
+                if !token.confirm() {
+                    return Err(PipelineError::WindowLifecycle(
+                        "durable discovery window could not confirm its provisional token",
+                    ));
+                }
+                if !token.set_durable_window_id(opened.window_id) {
+                    return Err(PipelineError::WindowLifecycle(
+                        "confirmed token rejected its durable window id",
+                    ));
+                }
+                tracing::debug!(
+                    window_id = opened.window_id,
+                    mint = %market.mint,
+                    closes_at_unix_ms = token.snapshot().closes_at_unix_ms,
+                    qualification_revision = qualification.revision,
+                    "confirmed durable post-discovery observation window"
+                );
+                opened.observation_inserted
+            } else if let Some(window_id) = matching_window_token
+                .as_ref()
+                .and_then(|token| token.durable_window_id())
+            {
+                database
+                    .insert_window_observation(window_id, &normalized.observation)
+                    .await?
+            } else {
+                database.insert_observation(&normalized.observation).await?
+            };
+            if observation_inserted {
                 inserted = inserted.saturating_add(1);
             }
-            if let Some(pool) = pump_swap_pool {
-                database.upsert_pump_swap_pool(&pool).await?;
-            }
-            if let Some(market) = normalized.discovered_market {
-                markets.register(market.clone())?;
-                let target = soldisco_discovery_engine::ObservationTarget::for_market(&market);
-                if let Some(token) = target.and_then(|target| {
-                    batch
-                        .window_tokens
-                        .iter()
-                        .find(|token| token.target() == &target)
-                }) && token.confirm()
-                {
-                    let window = token.snapshot();
-                    tracing::debug!(
-                        mint = %window.mint,
-                        closes_at_unix_ms = window.closes_at_unix_ms,
-                        "confirmed bounded post-discovery observation window"
-                    );
+            if let Some(pool) = &pump_swap_pool {
+                database.upsert_pump_swap_pool(pool).await?;
+                let registered = markets.register_pump_swap_pool(
+                    pool.network,
+                    &pool.pool_address,
+                    &pool.base_mint,
+                    &pool.quote_mint,
+                )?;
+                if registered.as_ref() != normalized.discovered_market.as_ref() {
+                    return Err(PipelineError::WindowLifecycle(
+                        "PumpSwap source orientation disagreed with normalized discovery",
+                    ));
                 }
+            }
+            if let Some(market) = normalized
+                .discovered_market
+                .filter(|market| market.venue == Venue::PumpBondingCurve)
+            {
+                markets.register(market.clone())?;
             }
             if let Some(mint) = retire_pump_mint {
                 markets.retire_pump_market(&mint)?;
@@ -850,17 +1025,34 @@ async fn process_batch(
         }
     }
 
-    Ok(inserted)
+    if !batch.window_tokens.is_empty() && selected_events == 0 {
+        complete = false;
+    }
+    Ok(BatchProcessingOutcome { inserted, complete })
+}
+
+fn window_target_parts(
+    target: &soldisco_discovery_engine::ObservationTarget,
+) -> (WindowTargetKind, String) {
+    match target {
+        soldisco_discovery_engine::ObservationTarget::PumpMint(mint) => {
+            (WindowTargetKind::PumpMint, mint.clone())
+        }
+        soldisco_discovery_engine::ObservationTarget::PumpSwapPool(pool) => {
+            (WindowTargetKind::PumpSwapPool, pool.clone())
+        }
+    }
 }
 
 fn batch_selects_event(
     batch: &ProgramLogBatch,
     event: &PumpEvent,
+    network: Network,
     maximum_discovery_age: Duration,
 ) -> bool {
     match batch.purpose {
         BatchPurpose::Discovery => {
-            let selected_discovery = discovery_seed(event).is_some_and(|seed| {
+            let selected_discovery = discovery_seed(event, network).is_some_and(|seed| {
                 batch.window_tokens.iter().any(|token| {
                     token.target() == &seed.target && token.is_open_at(batch.received_time_unix_ms)
                 })
@@ -965,7 +1157,18 @@ fn decode_batch_events(
                 decoded: event,
                 raw_evidence: instruction.data.clone(),
             }),
-            Err(DecodeError::UnknownDiscriminator { .. }) => {}
+            Err(DecodeError::UnknownDiscriminator {
+                program,
+                discriminator,
+            }) if is_pinned_event_discriminator(program, discriminator) => {}
+            Err(source @ DecodeError::UnknownDiscriminator { .. }) => {
+                quarantines.push(QuarantinedEvidence {
+                    coordinate,
+                    reason_code: "UNKNOWN_PUMP_EVENT_DISCRIMINATOR",
+                    reason_detail: source.to_string(),
+                    raw_evidence: instruction.data.clone(),
+                });
+            }
             Err(source) => {
                 quarantines.push(QuarantinedEvidence {
                     coordinate,
@@ -977,8 +1180,6 @@ fn decode_batch_events(
         }
     }
 
-    let mut matched_cpi_events = vec![false; cpi_events.len()];
-    let mut decoded = cpi_events.clone();
     let scoped_logs = match scope_program_data_logs(
         program_id,
         batch.slot,
@@ -1001,22 +1202,20 @@ fn decode_batch_events(
                 raw_evidence: batch.log_messages.join("\n").into_bytes(),
             });
             return Ok(DecodedBatch {
-                events: decoded,
+                events: Vec::new(),
                 quarantines,
             });
         }
     };
 
+    // Program-data logs are the canonical event stream because they are
+    // present in both PubSub notifications and getTransaction responses. CPI
+    // instruction bytes are useful corroboration, but must never shift event
+    // indexes or replace the raw evidence: doing so would give one chain event
+    // different durable identities depending on which collection path won.
+    let mut decoded = Vec::new();
     for record in scoped_logs {
-        let mut coordinate = record.coordinate;
-        if let Some(cpi_count) = cpi_event_indexes.get(&coordinate.instruction_index) {
-            coordinate.event_index =
-                cpi_count
-                    .checked_add(coordinate.event_index)
-                    .ok_or(PipelineError::LogScope(LogScopeError::TooManyEvents(
-                        u16::MAX,
-                    )))?;
-        }
+        let coordinate = record.coordinate;
         let raw_evidence = match decode_program_data_bytes(&record.log) {
             Ok(evidence) => evidence,
             Err(source) => {
@@ -1031,23 +1230,22 @@ fn decode_batch_events(
         };
 
         match decode_anchor_event(program_id, coordinate.clone(), &raw_evidence) {
-            Ok(event) => {
-                if let Some((index, _)) = cpi_events.iter().enumerate().find(|(index, cpi)| {
-                    !matched_cpi_events[*index]
-                        && cpi.decoded.coordinate.instruction_index
-                            == event.coordinate.instruction_index
-                        && cpi.decoded.event == event.event
-                }) {
-                    matched_cpi_events[index] = true;
-                    continue;
-                }
-
-                decoded.push(DecodedEvidence {
-                    decoded: event,
+            Ok(event) => decoded.push(DecodedEvidence {
+                decoded: event,
+                raw_evidence,
+            }),
+            Err(DecodeError::UnknownDiscriminator {
+                program,
+                discriminator,
+            }) if is_pinned_event_discriminator(program, discriminator) => {}
+            Err(source @ DecodeError::UnknownDiscriminator { .. }) => {
+                quarantines.push(QuarantinedEvidence {
+                    coordinate,
+                    reason_code: "UNKNOWN_PUMP_EVENT_DISCRIMINATOR",
+                    reason_detail: source.to_string(),
                     raw_evidence,
                 });
             }
-            Err(DecodeError::UnknownDiscriminator { .. }) => {}
             Err(source) => {
                 quarantines.push(QuarantinedEvidence {
                     coordinate,
@@ -1059,12 +1257,26 @@ fn decode_batch_events(
         }
     }
 
-    decoded.sort_by_key(|event| {
-        (
-            event.decoded.coordinate.instruction_index,
-            event.decoded.coordinate.event_index,
-        )
-    });
+    let mut matched_direct_events = vec![false; decoded.len()];
+    for cpi in cpi_events {
+        if let Some((index, _)) = decoded.iter().enumerate().find(|(index, direct)| {
+            !matched_direct_events[*index]
+                && direct.decoded.coordinate.instruction_index
+                    == cpi.decoded.coordinate.instruction_index
+                && direct.decoded.event == cpi.decoded.event
+        }) {
+            matched_direct_events[index] = true;
+        } else {
+            quarantines.push(QuarantinedEvidence {
+                coordinate: cpi.decoded.coordinate,
+                reason_code: "CPI_EVENT_WITHOUT_CANONICAL_LOG",
+                reason_detail: "decoded Anchor event CPI had no matching direct program-data event"
+                    .to_owned(),
+                raw_evidence: cpi.raw_evidence,
+            });
+        }
+    }
+
     Ok(DecodedBatch {
         events: decoded,
         quarantines,
@@ -1108,6 +1320,7 @@ mod tests {
     use soldisco_api_contracts::PrefilterDefaults;
     use soldisco_discovery_engine::ObservationWindowRegistry;
     use soldisco_domain::{ChainCoordinate, Commitment, Network};
+    use soldisco_persistence::StoredPrefilterDefaults;
     use soldisco_solana_rpc::TransactionInstructionRecord;
     use soldisco_source_pump::{
         ANCHOR_EVENT_CPI_DISCRIMINATOR, COMPLETE_EVENT_DISCRIMINATOR, CREATE_EVENT_DISCRIMINATOR,
@@ -1178,6 +1391,20 @@ mod tests {
         instructions: Vec<TransactionInstructionRecord>,
         direct_event: Vec<u8>,
     ) -> ProgramLogBatch {
+        batch_with_direct_events(instructions, vec![direct_event])
+    }
+
+    fn batch_with_direct_events(
+        instructions: Vec<TransactionInstructionRecord>,
+        direct_events: Vec<Vec<u8>>,
+    ) -> ProgramLogBatch {
+        let mut log_messages = vec![format!("Program {PUMP_PROGRAM_ID} invoke [1]")];
+        log_messages.extend(
+            direct_events
+                .into_iter()
+                .map(|event| format!("Program data: {}", STANDARD.encode(event))),
+        );
+        log_messages.push(format!("Program {PUMP_PROGRAM_ID} success"));
         ProgramLogBatch {
             purpose: BatchPurpose::TrackedActivity,
             slot: 42,
@@ -1185,13 +1412,10 @@ mod tests {
             signature: "signature".to_owned(),
             received_time_unix_ms: 1_720_000_000_000,
             instructions,
-            log_messages: vec![
-                format!("Program {PUMP_PROGRAM_ID} invoke [1]"),
-                format!("Program data: {}", STANDARD.encode(direct_event)),
-                format!("Program {PUMP_PROGRAM_ID} success"),
-            ],
+            log_messages,
             transaction_error: None,
             window_tokens: Vec::new(),
+            processing_succeeded: false,
         }
     }
 
@@ -1243,15 +1467,29 @@ mod tests {
             maximum_active_windows: 128,
             discovery_rpc_requests_per_second: 1,
             discovery_rpc_rate_limit_cooldown: Duration::from_secs(5),
+            prefilter_revision: 1,
+            prefilter_values: PrefilterDefaults {
+                max_event_age_ms: 15_000,
+                observation_window_ms: 60_000,
+                max_active_windows: 128,
+                rpc_requests_per_second: 1,
+                rpc_max_in_flight: 4,
+                rpc_request_timeout_ms: 5_000,
+                rpc_rate_limit_cooldown_ms: 5_000,
+            },
+            collector_run_id: String::new(),
         };
-        let next = base.with_prefilter_defaults(PrefilterDefaults {
-            max_event_age_ms: 20_000,
-            observation_window_ms: 90_000,
-            max_active_windows: 512,
-            rpc_requests_per_second: 8,
-            rpc_max_in_flight: 16,
-            rpc_request_timeout_ms: 4_000,
-            rpc_rate_limit_cooldown_ms: 9_000,
+        let next = base.with_prefilter_defaults(StoredPrefilterDefaults {
+            revision: 7,
+            values: PrefilterDefaults {
+                max_event_age_ms: 20_000,
+                observation_window_ms: 90_000,
+                max_active_windows: 512,
+                rpc_requests_per_second: 8,
+                rpc_max_in_flight: 16,
+                rpc_request_timeout_ms: 4_000,
+                rpc_rate_limit_cooldown_ms: 9_000,
+            },
         });
 
         assert_eq!(
@@ -1271,6 +1509,7 @@ mod tests {
             Duration::from_secs(9)
         );
         assert_eq!(next.queue_capacity, base.queue_capacity);
+        assert_eq!(next.prefilter_revision, 7);
         assert_eq!(
             next.collector.notification_processing_capacity,
             base.collector.notification_processing_capacity
@@ -1305,7 +1544,8 @@ mod tests {
         let complete =
             decode_anchor_event(PUMP_PROGRAM_ID, coordinate(1), &complete_event_bytes(1))
                 .expect("matching lifecycle fixture");
-        let seed = super::discovery_seed(&create.event).expect("discovery target");
+        let seed =
+            super::discovery_seed(&create.event, Network::SolanaMainnet).expect("discovery target");
         let windows = ObservationWindowRegistry::new(4);
         let provision =
             windows.provision_target(seed.target, seed.mint, received_at, Duration::from_secs(5));
@@ -1319,22 +1559,26 @@ mod tests {
             log_messages: Vec::new(),
             transaction_error: None,
             window_tokens: vec![provision.token.clone()],
+            processing_succeeded: false,
         };
 
         assert!(batch_selects_event(
             &batch,
             &create.event,
+            Network::SolanaMainnet,
             Duration::from_secs(5)
         ));
         assert!(!batch_selects_event(
             &batch,
             &complete.event,
+            Network::SolanaMainnet,
             Duration::from_secs(5)
         ));
         assert!(provision.token.confirm());
         assert!(batch_selects_event(
             &batch,
             &complete.event,
+            Network::SolanaMainnet,
             Duration::from_secs(5)
         ));
     }
@@ -1365,9 +1609,10 @@ mod tests {
     }
 
     #[test]
-    fn authoritative_cpi_event_replaces_its_direct_log_copy() {
+    fn cpi_copy_keeps_the_direct_log_as_canonical_evidence() {
         let mut cpi_data = ANCHOR_EVENT_CPI_DISCRIMINATOR.to_vec();
-        cpi_data.extend(complete_event_bytes(1));
+        let direct_evidence = complete_event_bytes(1);
+        cpi_data.extend(&direct_evidence);
         let decoded = decode_batch_events(
             &batch(
                 vec![TransactionInstructionRecord {
@@ -1377,7 +1622,7 @@ mod tests {
                     program_id: PUMP_PROGRAM_ID.to_owned(),
                     data: cpi_data,
                 }],
-                complete_event_bytes(1),
+                direct_evidence.clone(),
             ),
             PumpProgram::Pump,
         )
@@ -1388,7 +1633,7 @@ mod tests {
         assert!(decoded.quarantines.is_empty());
         assert!(matches!(events[0].decoded.event, PumpEvent::Complete(_)));
         assert_eq!(events[0].decoded.coordinate.event_index, 0);
-        assert_eq!(events[0].raw_evidence[..8], ANCHOR_EVENT_CPI_DISCRIMINATOR);
+        assert_eq!(events[0].raw_evidence, direct_evidence);
     }
 
     #[test]
@@ -1410,7 +1655,7 @@ mod tests {
         let mut cpi_data = ANCHOR_EVENT_CPI_DISCRIMINATOR.to_vec();
         cpi_data.extend(complete_event_bytes(1));
         let decoded = decode_batch_events(
-            &batch(
+            &batch_with_direct_events(
                 vec![TransactionInstructionRecord {
                     outer_instruction_index: 0,
                     inner_instruction_index: Some(2),
@@ -1418,7 +1663,7 @@ mod tests {
                     program_id: PUMP_PROGRAM_ID.to_owned(),
                     data: cpi_data,
                 }],
-                complete_event_bytes(10),
+                vec![complete_event_bytes(1), complete_event_bytes(10)],
             ),
             PumpProgram::Pump,
         )
@@ -1433,6 +1678,68 @@ mod tests {
     }
 
     #[test]
+    fn event_identity_and_evidence_do_not_depend_on_http_cpi_availability() {
+        let direct_events = vec![complete_event_bytes(1), complete_event_bytes(10)];
+        let mut cpi_data = ANCHOR_EVENT_CPI_DISCRIMINATOR.to_vec();
+        cpi_data.extend(&direct_events[0]);
+        let with_http_cpi = decode_batch_events(
+            &batch_with_direct_events(
+                vec![TransactionInstructionRecord {
+                    outer_instruction_index: 0,
+                    inner_instruction_index: Some(2),
+                    stack_height: Some(2),
+                    program_id: PUMP_PROGRAM_ID.to_owned(),
+                    data: cpi_data,
+                }],
+                direct_events.clone(),
+            ),
+            PumpProgram::Pump,
+        )
+        .expect("HTTP evidence path should decode");
+        let pubsub_only = decode_batch_events(
+            &batch_with_direct_events(Vec::new(), direct_events),
+            PumpProgram::Pump,
+        )
+        .expect("PubSub-only evidence path should decode");
+
+        assert!(with_http_cpi.quarantines.is_empty());
+        assert!(pubsub_only.quarantines.is_empty());
+        assert_eq!(with_http_cpi.events.len(), pubsub_only.events.len());
+        for (with_cpi, without_cpi) in with_http_cpi.events.iter().zip(&pubsub_only.events) {
+            assert_eq!(with_cpi.decoded, without_cpi.decoded);
+            assert_eq!(with_cpi.raw_evidence, without_cpi.raw_evidence);
+        }
+    }
+
+    #[test]
+    fn cpi_without_a_canonical_direct_log_fails_the_batch_closed() {
+        let mut cpi_data = ANCHOR_EVENT_CPI_DISCRIMINATOR.to_vec();
+        cpi_data.extend(complete_event_bytes(1));
+        let decoded = decode_batch_events(
+            &batch(
+                vec![TransactionInstructionRecord {
+                    outer_instruction_index: 0,
+                    inner_instruction_index: Some(2),
+                    stack_height: Some(2),
+                    program_id: PUMP_PROGRAM_ID.to_owned(),
+                    data: cpi_data,
+                }],
+                complete_event_bytes(10),
+            ),
+            PumpProgram::Pump,
+        )
+        .expect("unpaired CPI should be isolated");
+
+        assert_eq!(decoded.events.len(), 1);
+        assert_eq!(decoded.events[0].decoded.coordinate.event_index, 0);
+        assert_eq!(decoded.quarantines.len(), 1);
+        assert_eq!(
+            decoded.quarantines[0].reason_code,
+            "CPI_EVENT_WITHOUT_CANONICAL_LOG"
+        );
+    }
+
+    #[test]
     fn malformed_known_event_is_quarantined_without_poisoning_the_batch() {
         let decoded = decode_batch_events(
             &batch(Vec::new(), COMPLETE_EVENT_DISCRIMINATOR.to_vec()),
@@ -1443,5 +1750,25 @@ mod tests {
         assert!(decoded.events.is_empty());
         assert_eq!(decoded.quarantines.len(), 1);
         assert_eq!(decoded.quarantines[0].reason_code, "MALFORMED_PUMP_EVENT");
+    }
+
+    #[test]
+    fn pinned_ignored_event_is_distinct_from_a_future_discriminator() {
+        let known_ignored = decode_batch_events(
+            &batch(Vec::new(), vec![64, 69, 192, 104, 29, 30, 25, 107]),
+            PumpProgram::Pump,
+        )
+        .expect("known pinned event should be classified");
+        assert!(known_ignored.events.is_empty());
+        assert!(known_ignored.quarantines.is_empty());
+
+        let future = decode_batch_events(&batch(Vec::new(), vec![255; 8]), PumpProgram::Pump)
+            .expect("future event should be isolated");
+        assert!(future.events.is_empty());
+        assert_eq!(future.quarantines.len(), 1);
+        assert_eq!(
+            future.quarantines[0].reason_code,
+            "UNKNOWN_PUMP_EVENT_DISCRIMINATOR"
+        );
     }
 }

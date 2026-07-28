@@ -4,39 +4,74 @@ type DiscoveryCountersProps = {
   summary: ScreeningSummary;
 };
 
-export function DiscoveryCounters({
-  summary,
-}: DiscoveryCountersProps) {
+export type DiscoveryCounterItem = {
+  label: string;
+  value: string;
+  tone: string;
+};
+
+export function buildDiscoveryCounters(
+  summary: ScreeningSummary,
+): DiscoveryCounterItem[] {
   const feedCounter =
     summary.mode === "OBSERVE_ALL"
       ? {
-          label: "Observed",
+          label: "Current observed",
           value:
             summary.observed === null ? "—" : String(summary.observed),
           tone: "observed",
         }
-      : {
-          label: "Approved",
+      : summary.mode === "QUALIFIED_ONLY"
+        ? {
+            label: "Current qualified",
+            value:
+              summary.qualified === null
+                ? "—"
+                : String(summary.qualified),
+            tone: "approved",
+          }
+        : {
+          label: "Current approved",
           value:
             summary.approved === null ? "—" : String(summary.approved),
           tone: "approved",
         };
-  const counters = [
+  return [
     feedCounter,
     {
-      label: "Queued facts",
+      label: "Open windows",
       value:
-        summary.pending === null ? "—" : String(summary.pending),
+        summary.qualificationPending === null
+          ? "—"
+          : String(summary.qualificationPending),
       tone: "pending",
     },
     {
-      label: "Rejected",
+      label: "Activity rejects",
       value:
-        summary.rejected === null ? "—" : String(summary.rejected),
+        summary.qualificationRejected === null
+          ? "—"
+          : String(summary.qualificationRejected),
       tone: "rejected",
     },
     {
-      label: "Processed rate",
+      label: "Unknown windows",
+      value:
+        summary.qualificationUnknown === null
+          ? "—"
+          : String(summary.qualificationUnknown),
+      tone: "unknown",
+    },
+    {
+      label: "Processing failures",
+      value:
+        summary.processingFailures === null
+          ? "—"
+          : String(summary.processingFailures),
+      tone: "failure",
+    },
+    {
+      label: "Events/min",
       value:
         summary.ratePerMinute === null
           ? "— / min"
@@ -44,6 +79,12 @@ export function DiscoveryCounters({
       tone: "rate",
     },
   ];
+}
+
+export function DiscoveryCounters({
+  summary,
+}: DiscoveryCountersProps) {
+  const counters = buildDiscoveryCounters(summary);
 
   return (
     <dl

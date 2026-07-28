@@ -26,18 +26,24 @@ pub enum ProjectionError {
     },
     #[error("observe requires the OBSERVED stage")]
     ObserveRequiresObservedStage,
+    #[error("qualify requires the QUALIFIED stage")]
+    QualifyRequiresQualifiedStage,
     #[error("approve requires the APPROVED stage")]
     ApproveRequiresApprovedStage,
     #[error("token {mint} must be observed before it can be approved")]
     CandidateNotObserved { mint: String },
+    #[error("token {mint} must be qualified before it can be approved")]
+    CandidateNotQualified { mint: String },
     #[error("token {mint} approval does not match its observed market identity")]
     ApprovalMarketMismatch { mint: String },
     #[error("snapshot approved counter does not match its approved tokens")]
     ApprovedCounterMismatch,
+    #[error("snapshot qualified counter does not match its qualified tokens")]
+    QualifiedCounterMismatch,
     #[error("a truncated browser snapshot cannot restore the complete projection")]
     TruncatedSnapshot,
-    #[error("APPROVED_ONLY snapshots cannot contain observed-stage tokens")]
-    ObservedTokenInApprovedOnlySnapshot,
+    #[error("snapshot contains a token that is hidden by its discovery mode")]
+    TokenHiddenBySnapshotMode,
     #[error("rejection reason code must not be empty")]
     EmptyRejectionReason,
     #[error("rejection summaries must have a non-zero count")]
@@ -76,16 +82,21 @@ impl DiscoveryProjection {
         }
         let mut tokens = BTreeMap::new();
         let mut approved_count = 0_u64;
+        let mut qualified_count = 0_u64;
 
         for token in snapshot.tokens {
             validate_token(&token)?;
-            if snapshot.mode == DiscoveryMode::ApprovedOnly
-                && token.stage != DiscoveryStage::Approved
-            {
-                return Err(ProjectionError::ObservedTokenInApprovedOnlySnapshot);
+            if !token_is_visible(snapshot.mode, token.stage) {
+                return Err(ProjectionError::TokenHiddenBySnapshotMode);
             }
             if token.stage == DiscoveryStage::Approved {
                 approved_count = approved_count.saturating_add(1);
+            }
+            if matches!(
+                token.stage,
+                DiscoveryStage::Qualified | DiscoveryStage::Approved
+            ) {
+                qualified_count = qualified_count.saturating_add(1);
             }
             let mint = token.mint.clone();
             if tokens.insert(mint.clone(), token).is_some() {
@@ -95,6 +106,11 @@ impl DiscoveryProjection {
 
         if approved_count != snapshot.counters.approved {
             return Err(ProjectionError::ApprovedCounterMismatch);
+        }
+        if snapshot.mode != DiscoveryMode::ApprovedOnly
+            && qualified_count != snapshot.counters.qualified
+        {
+            return Err(ProjectionError::QualifiedCounterMismatch);
         }
 
         let mut rejection_reasons = BTreeMap::new();
@@ -139,14 +155,33 @@ impl DiscoveryProjection {
             Some(existing) if existing.observed_slot > token.observed_slot => {}
             Some(existing) => {
                 let was_approved = existing.stage == DiscoveryStage::Approved;
-                if was_approved && same_market(existing, &token) {
-                    token.stage = DiscoveryStage::Approved;
+                let was_qualified = matches!(
+                    existing.stage,
+                    DiscoveryStage::Qualified | DiscoveryStage::Approved
+                );
+                if same_market(existing, &token) {
+                    if was_approved {
+                        token.stage = DiscoveryStage::Approved;
+                    } else if was_qualified {
+                        token.stage = DiscoveryStage::Qualified;
+                    }
+                    token.qualification = token
+                        .qualification
+                        .or_else(|| existing.qualification.clone());
                     token.risk_score = token.risk_score.or(existing.risk_score);
                     token.opportunity_score =
                         token.opportunity_score.or(existing.opportunity_score);
                 }
                 if was_approved && token.stage != DiscoveryStage::Approved {
                     self.counters.approved = self.counters.approved.saturating_sub(1);
+                }
+                if was_qualified
+                    && !matches!(
+                        token.stage,
+                        DiscoveryStage::Qualified | DiscoveryStage::Approved
+                    )
+                {
+                    self.counters.qualified = self.counters.qualified.saturating_sub(1);
                 }
                 self.tokens.insert(token.mint.clone(), token);
             }
@@ -159,8 +194,34 @@ impl DiscoveryProjection {
         Ok(())
     }
 
+    /// Promotes an observed candidate after a complete bounded-window pass.
+    pub fn qualify(&mut self, token: DiscoveryToken) -> Result<(), ProjectionError> {
+        validate_token(&token)?;
+        if token.stage != DiscoveryStage::Qualified {
+            return Err(ProjectionError::QualifyRequiresQualifiedStage);
+        }
+
+        let Some(existing) = self.tokens.get(&token.mint) else {
+            return Err(ProjectionError::CandidateNotObserved { mint: token.mint });
+        };
+        if !same_market(existing, &token) {
+            return Err(ProjectionError::ApprovalMarketMismatch { mint: token.mint });
+        }
+        let was_qualified = matches!(
+            existing.stage,
+            DiscoveryStage::Qualified | DiscoveryStage::Approved
+        );
+
+        self.tokens.insert(token.mint.clone(), token);
+        if !was_qualified {
+            self.counters.qualified = self.counters.qualified.saturating_add(1);
+        }
+        self.advance();
+        Ok(())
+    }
+
     /// Promotes an already-observed candidate after an explicit future pass.
-    pub fn approve(&mut self, token: DiscoveryToken) -> Result<(), ProjectionError> {
+    pub fn approve(&mut self, mut token: DiscoveryToken) -> Result<(), ProjectionError> {
         validate_token(&token)?;
         if token.stage != DiscoveryStage::Approved {
             return Err(ProjectionError::ApproveRequiresApprovedStage);
@@ -172,12 +233,28 @@ impl DiscoveryProjection {
         if !same_market(existing, &token) {
             return Err(ProjectionError::ApprovalMarketMismatch { mint: token.mint });
         }
+        if !matches!(
+            existing.stage,
+            DiscoveryStage::Qualified | DiscoveryStage::Approved
+        ) {
+            return Err(ProjectionError::CandidateNotQualified { mint: token.mint });
+        }
         let was_approved = existing.stage == DiscoveryStage::Approved;
+        let was_qualified = matches!(
+            existing.stage,
+            DiscoveryStage::Qualified | DiscoveryStage::Approved
+        );
+        token.qualification = token
+            .qualification
+            .or_else(|| existing.qualification.clone());
 
         self.counters.pending = self.counters.pending.saturating_sub(1);
         self.tokens.insert(token.mint.clone(), token);
         if !was_approved {
             self.counters.approved = self.counters.approved.saturating_add(1);
+        }
+        if !was_qualified {
+            self.counters.qualified = self.counters.qualified.saturating_add(1);
         }
         self.advance();
         Ok(())
@@ -196,12 +273,16 @@ impl DiscoveryProjection {
 
         self.counters.pending = self.counters.pending.saturating_sub(1);
         self.counters.rejected = self.counters.rejected.saturating_add(1);
-        if self
-            .tokens
-            .remove(mint)
-            .is_some_and(|token| token.stage == DiscoveryStage::Approved)
-        {
-            self.counters.approved = self.counters.approved.saturating_sub(1);
+        if let Some(token) = self.tokens.remove(mint) {
+            if token.stage == DiscoveryStage::Approved {
+                self.counters.approved = self.counters.approved.saturating_sub(1);
+            }
+            if matches!(
+                token.stage,
+                DiscoveryStage::Qualified | DiscoveryStage::Approved
+            ) {
+                self.counters.qualified = self.counters.qualified.saturating_sub(1);
+            }
         }
 
         let summary =
@@ -237,9 +318,7 @@ impl DiscoveryProjection {
         let tokens: Vec<_> = self
             .tokens
             .values()
-            .filter(|token| {
-                self.mode == DiscoveryMode::ObserveAll || token.stage == DiscoveryStage::Approved
-            })
+            .filter(|token| token_is_visible(self.mode, token.stage))
             .cloned()
             .collect();
 
@@ -256,6 +335,16 @@ impl DiscoveryProjection {
 
     fn advance(&mut self) {
         self.sequence = self.sequence.saturating_add(1);
+    }
+}
+
+fn token_is_visible(mode: DiscoveryMode, stage: DiscoveryStage) -> bool {
+    match mode {
+        DiscoveryMode::ObserveAll => true,
+        DiscoveryMode::QualifiedOnly => {
+            matches!(stage, DiscoveryStage::Qualified | DiscoveryStage::Approved)
+        }
+        DiscoveryMode::ApprovedOnly => stage == DiscoveryStage::Approved,
     }
 }
 
@@ -373,6 +462,7 @@ mod tests {
                 base_volume_units: "0".to_owned(),
                 quote_volume_units: "0".to_owned(),
             },
+            qualification: None,
             risk_score: None,
             opportunity_score: None,
         }
@@ -437,6 +527,9 @@ mod tests {
         projection
             .observe(token("mint", DiscoveryStage::Observed, 1))
             .expect("candidate");
+        projection
+            .qualify(token("mint", DiscoveryStage::Qualified, 1))
+            .expect("qualification");
         projection
             .approve(token("mint", DiscoveryStage::Approved, 1))
             .expect("approval");

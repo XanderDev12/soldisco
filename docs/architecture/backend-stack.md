@@ -60,9 +60,9 @@ apps/
         │   └── routes/
         │       ├── health.rs    Database and aggregate stream health
         │       ├── stream.rs    Start, stop, and stream-status commands
-        │       ├── settings.rs  Revisioned global Prefilter Defaults
-        │       ├── discovery.rs OBSERVE_ALL feed and current counters
-        │       ├── tokens.rs    Observed-token inspector snapshots
+        │       ├── settings.rs  Revisioned Prefilter and Qualification Defaults
+        │       ├── discovery.rs Qualified feed, counters, and rejection summaries
+        │       ├── tokens.rs    Current-token inspector snapshots
         │       └── events.rs    SSE projection stream
         └── jobs/
             ├── pipeline.rs      Supervised local pipeline composition
@@ -71,7 +71,8 @@ apps/
             ├── intake.rs        Log prefiltering and active-window routing
             ├── pending_activity.rs Bounded provisional-activity holding
             ├── normalization.rs Decoded events to domain observations
-            ├── discovery.rs     Durable OBSERVE_ALL projection worker
+            ├── discovery.rs     Durable structural projection worker
+            ├── qualification.rs Durable bounded-window finalizer
             ├── maintenance.rs   Active retention and storage-size guard
             ├── recovery.rs      Reserved focused recovery contracts
             ├── screening.rs     Reserved screening boundary
@@ -109,7 +110,7 @@ Regular HTTP handles finite interactions:
 - request stream and component health
 - load the latest bounded Discovery snapshot with total/truncation metadata
 - inspect a token and its evidence
-- change validated configuration later
+- change validated persisted configuration
 
 The initial route contract is:
 
@@ -120,10 +121,24 @@ POST /api/v1/stream/start
 POST /api/v1/stream/stop
 GET  /api/v1/settings/prefilter-defaults
 PUT  /api/v1/settings/prefilter-defaults
+GET  /api/v1/settings/qualification-defaults
+PUT  /api/v1/settings/qualification-defaults
 GET  /api/v1/discovery
 GET  /api/v1/tokens/{mint}
 GET  /api/v1/events
 ```
+
+Both settings families are PostgreSQL-owned and survive browser, server, and
+computer restarts unless the database is deliberately removed. Prefilter
+updates require a stopped stream and apply on the next Start. Qualification
+updates may be saved while collection runs; each subsequently confirmed window
+pins the current revision and values, so existing windows never change policy
+mid-flight.
+
+The execution-mode presentation and adjustable sidebar/inspector widths are
+versioned browser `localStorage` preferences, not API settings. They grant no
+wallet or execution authority. Unsaved settings text, order drafts, active
+navigation, selections, tabs, and modals remain transient.
 
 Start and Stop are idempotent supervisor commands. Start launches one tracked
 pipeline and reports its actual `STARTING`, `RUNNING`, `DEGRADED`, or `ERROR`
@@ -176,14 +191,30 @@ that continues without an open browser request. The implemented workers are:
   bounded holding queue retains activity whose token is still provisional,
   with a resolution deadline separate from the observation close time
 - the collector processor decodes both Pump programs, persists discoveries
-  before same-transaction activity, and confirms or cancels provisional windows
+  before same-transaction activity, and confirms or cancels provisional
+  windows; confirmation atomically creates the durable window with its exact
+  identity, bounds, and pinned Prefilter and Qualification revisions
+- matching activity is admitted by Soldisco receipt time into the half-open
+  durable interval `[opened_at, closes_at)` and linked to that window
+- direct program-data events are canonical; immediately following silent event
+  self-CPIs corroborate them only under ordered 1:1 per-instruction pairing,
+  while CPI-only or malformed source coverage makes affected same-source
+  windows incomplete without activity HTTP
 - the discovery worker claims leased durable work and commits the
-  `OBSERVE_ALL` projection
+  structural projection
+- the qualification worker closes due windows only after source progress
+  reaches the close and every admitted batch settles; it waits for same-window
+  structural projection work, freezes the feature snapshot, evaluates the
+  pinned activity-quality rules, and atomically stores a `PASS`, `REJECT`, or
+  `UNKNOWN` assessment with its rule results
 - the maintenance worker prunes eligible terminal history in bounded batches
   and enforces the configured database-size guard
 
-Screening, Raydium enrichment, and richer projection work are reserved focused
-boundaries, not active workers yet.
+Deterministic scam/rug screening, Raydium enrichment, strategy evaluation, and
+execution are reserved focused boundaries, not active workers yet. A
+qualification `PASS` produces `QUALIFIED`; it means only that the completed
+window met the configured activity-quality thresholds. It is not a safety
+approval, ROI prediction, recommendation, or trade instruction.
 
 High-volume live notification work, provisional activity, and transaction
 batches each use the configured bounded capacity, so an RPC backlog cannot
@@ -203,41 +234,58 @@ durable work. The reliability sequence is:
 1. prefilter one successful fresh discovery and fetch its authoritative
    transaction once
 2. quarantine attributable malformed evidence without admitting a candidate
-3. commit normalized observations and durable work state in PostgreSQL
-4. wake the discovery worker through an in-process signal
-5. lease and process the work idempotently
-6. commit the rebuildable projection and complete the work lease
-7. publish a coalesced SSE projection-change notification
+3. commit the normalized discovery, confirmed durable window, pinned settings,
+   and durable work state in PostgreSQL
+4. persist matching observations with exact window membership
+5. lease and process structural work idempotently
+6. after source progress crosses the close, settle every admitted batch and
+   finish same-window structural projection work
+7. freeze one feature snapshot and evaluate every pinned qualification rule
+8. atomically commit the snapshot, assessment, rule results, counters, and
+   current-token transition
+9. publish a coalesced SSE projection-change notification
 
 If the process exits between steps, durable observations and leased work remain
-recoverable through PostgreSQL, but the live source resumes at the current head
-and open in-memory observation windows are lost. Stream stop/start and a
-supervised pipeline-attempt restart also recreate the registry. Capacity
-eviction can truncate a window without a durable completeness marker. The
-collector never claims that a live-first interval is complete.
+recoverable through PostgreSQL. A provisional discovery that has not yet
+normalized can still be lost, and the live source resumes at the current head
+without backfill. Confirmed window identity, members, pinned settings, frozen
+snapshots, and assessments are durable. Stop, restart, source disconnection,
+queue loss, or capacity eviction that wins before finalization marks an
+affected confirmed window incomplete; all of its rules evaluate `UNKNOWN`
+rather than claiming complete evidence. Cancellation and a finalization claim
+share one ordering boundary, so a claim that wins first freezes its prior
+completeness for that attempt.
 
 ## Pump, PumpSwap, and Raydium boundaries
 
-`source-pump` is the implemented discovery source. Its strict current-IDL
+`source-pump` is the implemented discovery source. Its strict pinned-IDL
 decoder handles supported Pump creation, trade, curve completion, and migration
-events plus PumpSwap pool creation, buy, and sell events. Unknown discriminators
-are ignored; attributable malformed event or log evidence is quarantined.
-Neither path creates an `OBSERVED` candidate.
+events plus PumpSwap pool creation, buy, sell, deposit, and withdrawal events.
+Pinned global events that are not token-window inputs are classified and
+ignored deliberately. Future discriminators and attributable malformed event
+or log evidence fail closed into quarantine. Neither path creates an
+`OBSERVED` candidate.
 
 PubSub is the low-latency discovery and activity source. Failed notifications,
 irrelevant events, and stale creation events are discarded from their direct
 logs. During one continuously running stream instance, a fresh Pump creation
 or PumpSwap pool creation can receive at most one globally deduplicated and
-paced HTTP transaction attempt with the same signature and exact slot. If it ages out
-before request admission, the collector cancels its provisional window and
-skips HTTP. If an attempted request fails, the collector also cancels that
-window and moves on. A provider rate-limit response places later distinct
-signatures into a shared cooldown but does not retry the failed signature.
+paced HTTP transaction attempt with the same signature and exact slot. If it
+ages out before request admission, the collector cancels its provisional
+window and skips HTTP. If an attempted request fails, the collector also
+cancels that window and moves on. A provider rate-limit response places later
+distinct signatures into a shared cooldown but does not retry the failed
+signature.
 Stopping and starting the stream, or restarting the process, recreates this
 in-memory claim set without performing intentional retry or backfill. Accepted
 discovery transactions retain full attributed program-data and supported
 Anchor CPI evidence for both Pump programs; matching active-window activity is
-decoded directly from PubSub.
+decoded directly from PubSub. The direct program-data copy remains the
+canonical event and raw evidence. Its immediately following silent event
+self-CPI is paired 1:1 within the same top-level instruction and never counted
+again. CPI-only, out-of-order, mismatched, malformed, explicitly truncated, or
+structurally unbalanced same-source logs mark affected windows incomplete; they
+do not trigger an activity transaction read.
 Receipt-time tokens preserve activity that arrived while HTTP or queue work was
 pending. A watchdog reconnects silent subscriptions at the current head without
 missed-history recovery.
@@ -271,26 +319,35 @@ The implemented database slice stores:
   base64, and their hashes
 - transaction signature, optional provider transaction index, instruction,
   event, slot, and exact-market identity
-- deterministic chain-identity deduplication keys
+- deterministic chain-identity deduplication keys; compatible replay preserves
+  one canonical receipt and direct evidence without duplicate work or
+  membership, while divergent immutable evidence fails closed
 - reserved collector/recovery checkpoints that live-first intake does not
   consume
 - malformed intake quarantine and durable collection-gap records
 - leased observation-work state
 - PumpSwap pool identity needed to resolve later events
 - venue-scoped cumulative activity and unique traders
-- `OBSERVED` discovery tokens, counters, and rebuildable projection events
+- append-only Qualification Defaults revisions, the active Prefilter Defaults
+  revision, and requested-running stream intent
+- confirmed bounded-window identity, exact member observations, pinned settings,
+  immutable feature snapshots, assessments, and per-rule results
+- current token stages, qualification/rejection counters, rejection summaries,
+  and rebuildable projection events
 
-Finality/correction relationships, rolling immutable snapshots, deterministic
-evidence and scores, durable approved-candidate windows, strategy records,
-paper records, and execution records remain later milestones. The implemented
-short pre-decision window is in-memory.
+Finality/correction relationships, deterministic scam/rug evidence and risk
+scores, durable approved-candidate monitoring windows, strategy records, paper
+records, and execution records remain later milestones.
 
 Active maintenance removes eligible terminal observation/work history,
 replaceable projection events, and quarantine records after their configured
-ages in bounded batches. Pending or leased work, current discovery/activity
-aggregates, checkpoints, pool identities, rejection summaries, and collection
-gaps are not pruned. The default terminal-history window is 24 hours, so replay
-tooling must report when requested raw evidence is no longer retained.
+ages in bounded batches. It does not prune active-window member observations.
+Pending or leased work, current discovery/activity aggregates, confirmed
+windows, frozen feature snapshots, assessments, rule results, checkpoints, pool
+identities, rejection summaries, and collection gaps are retained. The default
+terminal raw-history window is 24 hours, so later inspection or replay must
+report when exact source details have aged out even though the qualification
+snapshot and audit remain.
 
 Completed or migrated Pump markets retire from the active startup/live market
 registry. PumpSwap pool identities and current token/activity/trader
@@ -306,13 +363,11 @@ physical database size.
 
 The guard covers the configured database, not filesystem free space, WAL,
 other databases, Docker storage, or build caches. Operators must preserve
-machine-level headroom separately. Discovery-token, market, activity,
-checkpoint, pool, rejection-summary, and gap projections are intentionally
-retained in this milestone because later events depend on their identities.
-That means the present aggregate projection and in-memory window registry are
-not yet suitable for indefinite mainnet collection. The next milestone needs
-durable on-demand active-window identity and a versioned aggregate
-archive/expiry policy before continuous deployment.
+machine-level headroom separately. Discovery-token, market, activity, window,
+snapshot, assessment, rule-result, checkpoint, pool, rejection-summary, and gap
+data are intentionally retained in this milestone. These durable records
+currently grow until the database-size guard stops collection, so an explicit
+archive/expiry policy is still required before indefinite mainnet operation.
 
 ## Local-only operating assumptions
 
@@ -323,13 +378,13 @@ archive/expiry policy before continuous deployment.
 - Solana RPC endpoints are outbound dependencies of the Rust server.
 - The public Solana endpoints in `.env.example` use one paced discovery read
   per second and a five-second shared cooldown after a provider rate-limit
-  response. They may still
-  rate-limit or restrict sustained mainnet subscriptions; dedicated
-  configurable HTTP and WebSocket endpoints are recommended for continuous
-  operation.
+  response. They may still rate-limit or restrict sustained mainnet
+  subscriptions; dedicated configurable HTTP and WebSocket endpoints are
+  recommended for continuous operation.
 - Secrets and local connection strings stay out of Git.
 - Closing the Rust process stops collection; the next start resumes at the
-  current live head without backfill.
+  current live head without backfill and finalizes affected confirmed windows
+  as incomplete `UNKNOWN`.
 - No cloud deployment, managed database, Docker hosting, or uptime promise is
   part of the current milestone.
 

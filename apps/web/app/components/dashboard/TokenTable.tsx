@@ -46,6 +46,8 @@ export function TokenTable({
     backendConnected,
     streamStatus,
     requestedRunning: streamRequestedRunning,
+    mode: screeningSummary.mode,
+    dataStale,
   });
 
   return (
@@ -71,7 +73,7 @@ export function TokenTable({
           </span>
           <RejectionLog
             entries={rejectionLog}
-            totalRejected={screeningSummary.rejected}
+            totalRejected={screeningSummary.qualificationRejected}
           />
           <button
             type="button"
@@ -85,7 +87,7 @@ export function TokenTable({
       </div>
 
       <div className="table-scroll">
-        {dataStale && tokens.length > 0 && (
+        {dataStale && (
           <div className="stale-data-notice" role="status">
             Last-known discoveries · The local backend is not providing a
             current snapshot.
@@ -182,7 +184,9 @@ export function TokenTable({
         <span>
           {screeningSummary.mode === "OBSERVE_ALL"
             ? "Observe-all mode · No approval threshold applied"
-            : "Approved-only mode · Explicit passes only"}
+            : screeningSummary.mode === "QUALIFIED_ONLY"
+              ? "Qualified-only mode · Completed qualification passes"
+              : "Approved-only mode · Explicit safety passes only"}
         </span>
       </footer>
     </section>

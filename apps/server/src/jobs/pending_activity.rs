@@ -1,6 +1,6 @@
 use std::{collections::VecDeque, time::Duration};
 
-use soldisco_discovery_engine::ObservationWindowStatus;
+use soldisco_discovery_engine::{ObservationWindowStatus, WindowIncompleteReason};
 
 use super::{collector::ProgramLogBatch, intake::BatchPurpose};
 
@@ -43,6 +43,9 @@ impl PendingActivityQueue {
             return PendingActivityAdmission::Ready(batch);
         }
         if self.batches.len() >= self.capacity {
+            for token in &batch.window_tokens {
+                token.cancel_with_reason(WindowIncompleteReason::QueueOverflow);
+            }
             return PendingActivityAdmission::Dropped;
         }
         let maximum_hold_ms = i64::try_from(self.maximum_hold.as_millis()).unwrap_or(i64::MAX);
@@ -104,6 +107,7 @@ mod tests {
             log_messages: Vec::new(),
             transaction_error: None,
             window_tokens: vec![token],
+            processing_succeeded: false,
         }
     }
 

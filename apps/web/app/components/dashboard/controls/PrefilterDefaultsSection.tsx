@@ -43,14 +43,27 @@ export function PrefilterDefaultsSection({
     void refresh();
   }
 
-  const statusLabel =
-    status === "LOADING"
-      ? "Loading"
+  const settingsState =
+    status === "READY"
+      ? "READY"
+      : status === "ERROR"
+        ? "STALE"
+        : status === "SAVING"
+          ? "SAVING"
+          : "REFRESHING";
+  const statusLabel = !backendConnected
+    ? "Unavailable"
+    : status === "LOADING"
+      ? settings === null
+        ? "Loading"
+        : "Refreshing"
       : status === "SAVING"
         ? "Saving"
-        : settings === null || !backendConnected
-          ? "Unavailable"
-          : `Revision ${settings.revision}`;
+        : status === "ERROR" && settings !== null
+          ? `Revision ${settings.revision} · Stale`
+          : settings === null
+            ? "Unavailable"
+            : `Revision ${settings.revision}`;
 
   return (
     <article className="control-card control-card--wide prefilter-defaults">
@@ -102,6 +115,7 @@ export function PrefilterDefaultsSection({
           settings={settings}
           backendConnected={backendConnected}
           streamStopped={streamStopped}
+          settingsState={settingsState}
           saving={status === "SAVING"}
           errorMessage={errorMessage}
           saveNotice={saveNotice}

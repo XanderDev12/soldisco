@@ -16,7 +16,7 @@ export type DashboardView =
 export type SectionView = Exclude<DashboardView, "discovery">;
 export type ExecutionMode = "Paper" | "Live";
 export type TradeSide = "Buy" | "Sell";
-export type TokenStatus = "Observed" | "Approved";
+export type TokenStatus = "Observed" | "Qualified" | "Approved";
 export type InspectorTab =
   | "Overview"
   | "Risk"

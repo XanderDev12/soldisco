@@ -12,10 +12,14 @@ separate services.
   database to one configured Solana network before ingestion
 - structured JSON logging and graceful shutdown
 - database-aware health
-- supervised, idempotent Start and Stop commands with durable requested state
+- supervised, idempotent Start and Stop commands whose requested-running intent
+  is persisted in PostgreSQL and restored after a server restart
 - revisioned global Prefilter Defaults persisted in PostgreSQL, editable only
   while explicitly stopped and applied through a fresh pipeline/RPC gate on
   the next Start
+- append-only Qualification Defaults revisions persisted in PostgreSQL,
+  editable while running and pinned with their complete values by each new
+  durable window
 - successful-log prefiltering for fresh Pump creation and PumpSwap pool
   creation before HTTP
 - at most one `getTransaction` attempt for each selected signature during the
@@ -26,13 +30,29 @@ separate services.
 - live-first reconnects with no transaction retry or historical backfill, plus
   a silent-subscription watchdog
 - configurable bounded provisional observation windows that capture immediate
-  mint/pool activity directly from PubSub, then confirm it only after the
-  authoritative discovery normalizes successfully
-- strict current-IDL decoding of supported logs and Anchor CPI events
+  mint/pool activity directly from PubSub, then atomically become durable only
+  after the authoritative discovery normalizes successfully
+- exact half-open receipt-time membership for each durable Pump mint or
+  PumpSwap pool window
+- strict pinned-IDL classification with the direct Pump/PumpSwap program-data
+  event as canonical evidence; its immediately following silent event self-CPI
+  corroborates that event only under ordered 1:1 per-instruction pairing and
+  is never counted again
+- same-source incomplete-window handling for CPI-only, out-of-order,
+  mismatched, future-discriminator, malformed, truncated, or unbalanced PubSub
+  logs, without spending activity HTTP capacity
 - attributable malformed-event and log evidence quarantine with compact source
   evidence
+- immutable chain-evidence conflict detection: compatible replay keeps one
+  canonical receipt and direct evidence without duplicating work or membership,
+  while divergent reuse of the same chain coordinate fails closed
 - normalized observation and durable-work persistence before projection work
-- venue-scoped Pump/PumpSwap activity and `OBSERVE_ALL` discovery projections
+- versioned immutable window features for trades, buy/sell flow, unique
+  wallets, wallet concentration, price, reserves, completion, and migration
+- versioned activity qualification with persisted `PASS`, `REJECT`, or
+  `UNKNOWN` assessments and rule evidence
+- a default `QUALIFIED_ONLY` projection with diagnostic `OBSERVE_ALL`, truthful
+  qualification counters, and rejection summaries
 - bounded authoritative Discovery snapshots and authoritative token lookup from
   PostgreSQL
 - coalesced named `soldisco` SSE notifications with an initial resync
@@ -49,10 +69,22 @@ configured Host, and—when a browser supplies it—the exact configured Origin.
 supported bounds. Its locally guarded `PUT` replacement requires the stream to
 be stopped and an exact expected revision, preventing hidden restarts and
 lost updates between browser sessions.
+`GET /api/v1/settings/qualification-defaults` and its locally guarded `PUT`
+counterpart expose the independent qualification policy. A coherent optimistic
+revision can be saved while collection runs; open windows retain their pinned
+revision and only new windows use the update.
 
-The current discovery worker is intentionally structural only. It records
-valid decoded candidates as `OBSERVED`; it does not apply thresholds, approve
-or reject tokens, or produce risk/opportunity scores.
+The discovery worker remains structural and records valid decoded candidates
+as `OBSERVED`. The separate qualification finalizer freezes exact-window
+evidence only after the source has progressed through the half-open close,
+every admitted batch has settled, and the window's structural projection work
+is no longer pending or processing. Stop/disconnect cancellation and the
+finalization claim share one ordering boundary: cancellation first freezes an
+incomplete `UNKNOWN`; an already eligible claim first keeps its frozen prior
+completeness. The finalizer may then advance the current exact-market candidate
+to `QUALIFIED`. That stage is only an activity-quality pass. It is not scam
+clearance, safety approval, an ROI rating, a recommendation, or permission to
+trade. Risk and opportunity scores remain unavailable.
 
 ## Module map
 
@@ -62,13 +94,15 @@ or reject tokens, or produce risk/opportunity scores.
   also serializes Start, Stop, and persisted Prefilter Defaults changes so a
   settings update cannot race stream launch.
 - `http/` contains transport-only routing, errors, and route handlers.
-- `jobs/pipeline.rs` composes and supervises the collector processor and
-  discovery worker.
+- `jobs/pipeline.rs` composes and supervises the collector processor,
+  discovery worker, qualification finalizer, and maintenance.
 - `jobs/collector.rs` owns live subscriptions, one-shot discovery transaction
-  retrieval, and live-first reconnection.
+  retrieval, live-first reconnection, per-source progress, and settlement of
+  every receipt-time admission even when in-flight work is cancelled.
 - `jobs/discovery_rpc.rs` owns global discovery-signature deduplication,
   request pacing, concurrency admission, and shared rate-limit cooldown.
-- `jobs/intake.rs` owns direct-log scoping, discovery freshness, and active
+- `jobs/intake.rs` owns direct-log scoping, ordered silent event self-CPI
+  corroboration, discovery freshness, same-source coverage gaps, and active
   window routing.
 - `jobs/pending_activity.rs` owns bounded holding for receipt-time activity
   whose provisional discovery has not resolved yet; its holding deadline does
@@ -76,11 +110,17 @@ or reject tokens, or produce risk/opportunity scores.
 - `jobs/recovery.rs` reserves focused recovery contracts for a future explicit
   recovery mode; it is not active in the live-first collector.
 - `jobs/normalization.rs` maps decoded events to domain observations.
-- `jobs/discovery.rs` claims durable work and commits the `OBSERVE_ALL`
+- `jobs/discovery.rs` claims durable work and commits the structural projection
+  used by both diagnostic and qualified views.
+- `jobs/qualification.rs` freezes closed durable windows, evaluates their
+  pinned rules, persists immutable audit records, and updates the qualified
+  projection atomically. It retries while same-window structural projection
+  work is unsettled. Interrupted windows finalize as incomplete `UNKNOWN`;
+  superseded markets keep their audit without overwriting the newer token
   projection.
 - `jobs/maintenance.rs` owns terminal-history retention and the storage guard.
-- the remaining focused job modules reserve later screening, Raydium, and
-  richer projection contracts without making those features active.
+- the remaining focused job modules reserve later deterministic risk, Raydium,
+  strategy, and richer projection work without making those features active.
 
 The server never accepts seed phrases or private keys, never signs
 transactions, and never exposes PostgreSQL to the browser. The public Solana
@@ -89,3 +129,17 @@ five-second cooldown after a provider rate-limit response, without retrying the
 failed signature. They
 may still limit sustained mainnet collection; use locally configured dedicated
 RPC URLs when needed.
+
+Terminal normalized observations, complete versioned `source_details`, and
+compact source evidence are pruned under the configured raw-history policy.
+Frozen feature snapshots and qualification audits are retained, so they remain
+useful after raw expiry but are not a substitute for complete source replay.
+Durable windows, snapshots, assessments, and rule results do not yet have an
+archive policy and will grow PostgreSQL until the local size guard stops
+collection.
+
+Prefilter Defaults, Qualification Defaults, and requested-running stream intent
+are backend settings and therefore live in PostgreSQL. The browser's
+execution-mode presentation and adjustable dashboard widths live separately
+in `localStorage`; order drafts and transient navigation are deliberately not
+backend settings or execution authorization.

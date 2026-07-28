@@ -62,6 +62,13 @@ pub struct NormalizedObservation {
     /// without retaining an entire RPC transaction response.
     #[serde(default)]
     pub source_evidence_base64: String,
+    /// Complete versioned source event as decoded from the Pump public IDL.
+    ///
+    /// The stable source-neutral payload remains the cross-venue input. This
+    /// record preserves protocol-specific facts such as fees, reserve variants,
+    /// decimals, liquidity and mode flags for later feature extraction.
+    #[serde(default)]
+    pub source_details: serde_json::Value,
     pub payload: ObservationPayload,
 }
 
@@ -91,6 +98,28 @@ pub enum ObservationPayload {
         base_reserve_units: Option<u64>,
         quote_reserve_units: Option<u64>,
     },
+    /// Source-neutral liquidity addition after source mint ordering has been
+    /// converted to the market's canonical token/quote orientation.
+    LiquidityDeposited {
+        provider: String,
+        base_amount_units: u64,
+        quote_amount_units: u64,
+        base_reserve_units: u64,
+        quote_reserve_units: u64,
+        lp_token_amount_units: u64,
+        lp_token_supply_units: u64,
+    },
+    /// Source-neutral liquidity removal after source mint ordering has been
+    /// converted to the market's canonical token/quote orientation.
+    LiquidityWithdrawn {
+        provider: String,
+        base_amount_units: u64,
+        quote_amount_units: u64,
+        base_reserve_units: u64,
+        quote_reserve_units: u64,
+        lp_token_amount_units: u64,
+        lp_token_supply_units: u64,
+    },
     MarketCompleted {
         user: String,
     },
@@ -110,7 +139,7 @@ mod tests {
 
     use crate::Network;
 
-    use super::{ChainCoordinate, ObservationKey, SourceProgram};
+    use super::{ChainCoordinate, ObservationKey, ObservationPayload, SourceProgram};
 
     fn key(event_index: u16) -> ObservationKey {
         ObservationKey {
@@ -140,5 +169,24 @@ mod tests {
         devnet.network = Network::SolanaDevnet;
 
         assert_ne!(mainnet, devnet);
+    }
+
+    #[test]
+    fn source_neutral_liquidity_payload_round_trips_exact_units() {
+        let payload = ObservationPayload::LiquidityWithdrawn {
+            provider: "provider".to_owned(),
+            base_amount_units: u64::MAX,
+            quote_amount_units: 2,
+            base_reserve_units: 3,
+            quote_reserve_units: 4,
+            lp_token_amount_units: 5,
+            lp_token_supply_units: 6,
+        };
+        let encoded = serde_json::to_value(&payload).expect("serialize liquidity");
+        assert_eq!(encoded["type"], "LIQUIDITY_WITHDRAWN");
+        assert_eq!(encoded["data"]["base_amount_units"], u64::MAX);
+        let decoded: ObservationPayload =
+            serde_json::from_value(encoded).expect("deserialize liquidity");
+        assert_eq!(decoded, payload);
     }
 }

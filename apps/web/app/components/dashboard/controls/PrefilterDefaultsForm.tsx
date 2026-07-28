@@ -19,6 +19,7 @@ type PrefilterDefaultsFormProps = {
   settings: PrefilterDefaultsResponse;
   backendConnected: boolean;
   streamStopped: boolean;
+  settingsState: "READY" | "REFRESHING" | "SAVING" | "STALE";
   saving: boolean;
   errorMessage: string | null;
   saveNotice: string | null;
@@ -32,6 +33,7 @@ export function PrefilterDefaultsForm({
   settings,
   backendConnected,
   streamStopped,
+  settingsState,
   saving,
   errorMessage,
   saveNotice,
@@ -50,7 +52,11 @@ export function PrefilterDefaultsForm({
     settings.values,
     validation,
   );
-  const canEdit = backendConnected && streamStopped && !saving;
+  const canEdit =
+    backendConnected &&
+    streamStopped &&
+    settingsState === "READY" &&
+    !saving;
   const canSave = canEdit && dirty && validation.valid;
 
   function changeField(field: PrefilterDefaultsField, value: string) {
@@ -119,14 +125,26 @@ export function PrefilterDefaultsForm({
       <div className="settings-apply" role="status" aria-live="polite">
         <div>
           <strong>
-            {streamStopped
-              ? "Applies on next stream start"
-              : "Stop the stream to edit"}
+            {settingsState === "STALE"
+              ? "Retained settings are stale"
+              : settingsState === "SAVING"
+                ? "Saving the new collector defaults"
+                : settingsState === "REFRESHING"
+                  ? "Refreshing authoritative settings"
+                  : streamStopped
+                    ? "Applies on next stream start"
+                    : "Stop the stream to edit"}
           </strong>
           <p>
-            {streamStopped
-              ? "Saving does not start the collector. The next Start uses the new revision."
-              : "The running collector keeps the settings it started with."}
+            {settingsState === "STALE"
+              ? "Reload the authoritative revision before editing or saving."
+              : settingsState === "SAVING"
+                ? "The complete revision is being stored atomically."
+                : settingsState === "REFRESHING"
+                  ? "Editing resumes after the current revision is confirmed."
+                  : streamStopped
+                    ? "Saving does not start the collector. The next Start uses the new revision."
+                    : "The running collector keeps the settings it started with."}
           </p>
           {errorMessage !== null && (
             <span className="settings-apply__error">{errorMessage}</span>

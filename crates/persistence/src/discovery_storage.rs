@@ -110,13 +110,13 @@ pub(crate) async fn upsert_rejection_summary(
     seen_at_unix_ms: i64,
 ) -> Result<(), PersistenceError> {
     sqlx::query(
-        "INSERT INTO discovery_rejection_summaries (\
+        "INSERT INTO discovery_processing_failure_summaries (\
             reason_code, count, last_seen_unix_ms\
          ) VALUES ($1, 1, $2) \
          ON CONFLICT (reason_code) DO UPDATE \
-         SET count = discovery_rejection_summaries.count + 1, \
+         SET count = discovery_processing_failure_summaries.count + 1, \
              last_seen_unix_ms = GREATEST(\
-                discovery_rejection_summaries.last_seen_unix_ms, \
+                discovery_processing_failure_summaries.last_seen_unix_ms, \
                 EXCLUDED.last_seen_unix_ms\
              ), \
              updated_at = NOW()",

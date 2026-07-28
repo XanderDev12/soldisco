@@ -151,6 +151,60 @@ environment-only process configuration. Strategy-specific thresholds, wallet
 profiles, momentum windows, entries, exits, and sizing belong to versioned
 strategy configuration rather than global Prefilter Defaults.
 
+## Persisted Qualification Defaults
+
+Qualification Defaults are global, strategy-neutral activity requirements for
+the short discovery window. The server seeds one safe revision in PostgreSQL
+only when no operator revision exists:
+
+| Setting | Initial value | Supported range |
+| --- | ---: | ---: |
+| Minimum trades | 5 | 1–10,000 |
+| Minimum unique traders | 3 | 1–10,000 and no greater than minimum trades |
+| Minimum buys | 1 | 0–10,000 and no greater than minimum trades |
+| Minimum sells | 1 | 0–10,000 and no greater than minimum trades |
+| Minimum native-quote volume | 50,000,000 atomic units | 0–9,007,199,254,740,991 |
+| Minimum stable-quote volume | 5,000,000 atomic units | 0–9,007,199,254,740,991 |
+| Maximum single-wallet quote share | 9,000 basis points | 1,000–10,000 |
+
+The browser reads values and bounds from
+`GET /api/v1/settings/qualification-defaults` and replaces the complete set
+through the locally authorized
+`PUT /api/v1/settings/qualification-defaults`. Optimistic revisions reject a
+stale browser write. Unlike Prefilter Defaults, these values may be saved while
+the stream runs. Each confirmed durable discovery window pins the current
+revision and complete value snapshot; a later edit applies only to subsequently
+confirmed windows and never rewrites an open or finalized assessment. The API
+therefore reports `NEW_WINDOWS` rather than requiring a stream restart.
+
+Saved Prefilter and Qualification Defaults survive browser closure, Rust-server
+restart, and computer restart because PostgreSQL is authoritative. The
+requested Start/Stop intent is also stored there: Start saves
+`requested_running = true`, Stop saves `false`, and server startup launches a
+fresh supervised pipeline when the saved intent is true. Transient runtime
+status such as `STARTING`, `DEGRADED`, or a task handle is recomputed rather
+than persisted. These records are lost only if the local database or its volume
+is deliberately deleted or reset. Future strategy-specific settings must use
+their own versioned durable records rather than these global qualification
+controls.
+
+Two current interface preferences intentionally do not cross the backend
+boundary. The Paper/Live presentation choice and adjustable sidebar/inspector
+widths are validated and stored under versioned keys in browser
+`localStorage`. Clearing that browser storage restores safe defaults, and a
+blocked or full storage provider leaves the in-memory UI usable. The mode is
+presentation only and never authorizes wallet access, signing, or execution.
+Unsaved settings form text, order-side/amount drafts, the active destination,
+selected token, inspector tab, and open modals are transient and reset with the
+page or session.
+
+Qualification is deliberately narrower than risk screening. `PASS` means a
+complete exact-market window met the configured activity and concentration
+requirements. `REJECT` means one or more inexpensive requirements failed.
+`UNKNOWN` means collection or required evidence was incomplete. None of these
+decisions asserts that a token is safe, predicts ROI, recommends a purchase, or
+authorizes trading.
+
 ## Solana RPC selection
 
 The committed template uses Solana's public mainnet HTTP and WebSocket
@@ -212,11 +266,13 @@ have used the new version.
 ## Storage and channel limits
 
 Transaction queues, paced and concurrent RPC work, discovery age, active
-windows, snapshots, retention batches, timeouts, and reconnect timing are
-bounded through the variables above. Terminal raw history and replaceable
-projection events are pruned without deleting discovery-token/activity
-aggregates, reserved checkpoints, pool identities, or collection-gap records.
-Pending or leased work is never pruned.
+windows, browser snapshots, retention batches, timeouts, and reconnect timing
+are bounded through the variables above. Terminal raw observation/work history
+and replaceable projection events are pruned without deleting current
+discovery/activity projections, confirmed discovery windows, immutable feature
+snapshots and assessments, reserved checkpoints, pool identities, or
+collection-gap records. Pending or leased work and observations belonging to
+an active window are never pruned.
 
 If `pg_database_size` reaches `DATABASE_MAX_BYTES`, collection fails closed.
 Deleting rows lets PostgreSQL reuse space but does not necessarily reduce its
@@ -228,10 +284,12 @@ measure free filesystem space, PostgreSQL WAL, other databases, Docker disk
 images, or frontend/Rust build caches. Keep `DATABASE_MAX_BYTES` comfortably
 below the machine's remaining capacity and monitor local free space separately.
 Current discovery-token, market, activity, checkpoint, pool,
-rejection-summary, and collection-gap projections are retained so later facts
-can be resolved. The active observation working set is bounded and expires,
-but durable aggregate lifecycle still needs an archival policy before
-unattended, high-volume, long-running use.
+qualification-summary, and collection-gap projections are retained so later
+facts can be resolved. Confirmed window identities, feature snapshots,
+assessments, and rule results are also retained. Their lifecycle still needs an
+archive/expiry policy before unattended, high-volume, long-running use; until
+then, sustained collection grows PostgreSQL and eventually reaches the
+configured fail-closed database-size limit.
 
 HTTP discovery snapshots return the latest bounded candidates plus
 `tokens_total` and `tokens_truncated`, so the browser never implies that a

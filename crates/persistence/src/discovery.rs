@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use soldisco_api_contracts::{
     DiscoveryCounters, DiscoveryMode, DiscoverySnapshot, DiscoveryStage, DiscoveryToken,
-    RejectionSummary,
+    QualificationDecision, RejectionSummary, WindowCompleteness,
 };
 use sqlx::FromRow;
 
@@ -69,9 +69,13 @@ struct ProjectionStateRow {
     sequence: i64,
     mode: String,
     observed: i64,
-    pending: i64,
+    queued_facts: i64,
+    qualified: i64,
+    qualification_pending: i64,
+    qualification_rejected: i64,
+    qualification_unknown: i64,
+    processing_failures: i64,
     approved: i64,
-    rejected: i64,
     flow_per_minute: Option<i64>,
 }
 
@@ -114,51 +118,66 @@ impl Database {
         .fetch_optional(&mut *transaction)
         .await?;
 
-        let (mutation, mut token_to_store, is_new, approval_removed) = match existing {
-            None => (
-                DiscoveryProjectionMutation::Inserted,
-                candidate.token.clone(),
-                true,
-                false,
-            ),
-            Some(existing) => {
-                let stored: DiscoveryToken = serde_json::from_value(existing.token)?;
-                validate_stored_stage(&existing.stage, stored.stage)?;
-                if existing.observed_slot > to_i64(candidate.token.observed_slot, "observed_slot")?
-                {
-                    let mut enriched = stored;
-                    let changed = enrich_metadata_from_stale_creation(
-                        &mut enriched,
-                        &candidate.token,
-                        &work.observation,
-                    );
-                    (
-                        if changed {
-                            DiscoveryProjectionMutation::MetadataEnrichedFromStaleCreation
-                        } else {
-                            DiscoveryProjectionMutation::StaleObservationIgnored
-                        },
-                        enriched,
-                        false,
-                        false,
-                    )
-                } else {
-                    let was_approved = stored.stage == DiscoveryStage::Approved;
-                    let merged = merge_observation(stored, candidate.token.clone());
-                    let approval_removed = was_approved && merged.stage != DiscoveryStage::Approved;
-                    (
-                        if approval_removed {
-                            DiscoveryProjectionMutation::DemotedByMarketChange
-                        } else {
-                            DiscoveryProjectionMutation::Updated
-                        },
-                        merged,
-                        false,
-                        approval_removed,
-                    )
+        let (mutation, mut token_to_store, is_new, approval_removed, qualification_removed) =
+            match existing {
+                None => (
+                    DiscoveryProjectionMutation::Inserted,
+                    candidate.token.clone(),
+                    true,
+                    false,
+                    false,
+                ),
+                Some(existing) => {
+                    let stored: DiscoveryToken = serde_json::from_value(existing.token)?;
+                    validate_stored_stage(&existing.stage, stored.stage)?;
+                    if existing.observed_slot
+                        > to_i64(candidate.token.observed_slot, "observed_slot")?
+                    {
+                        let mut enriched = stored;
+                        let changed = enrich_metadata_from_stale_creation(
+                            &mut enriched,
+                            &candidate.token,
+                            &work.observation,
+                        );
+                        (
+                            if changed {
+                                DiscoveryProjectionMutation::MetadataEnrichedFromStaleCreation
+                            } else {
+                                DiscoveryProjectionMutation::StaleObservationIgnored
+                            },
+                            enriched,
+                            false,
+                            false,
+                            false,
+                        )
+                    } else {
+                        let was_approved = stored.stage == DiscoveryStage::Approved;
+                        let was_qualified = matches!(
+                            stored.stage,
+                            DiscoveryStage::Qualified | DiscoveryStage::Approved
+                        );
+                        let merged = merge_observation(stored, candidate.token.clone());
+                        let approval_removed =
+                            was_approved && merged.stage != DiscoveryStage::Approved;
+                        let qualification_removed = was_qualified
+                            && !matches!(
+                                merged.stage,
+                                DiscoveryStage::Qualified | DiscoveryStage::Approved
+                            );
+                        (
+                            if approval_removed || qualification_removed {
+                                DiscoveryProjectionMutation::DemotedByMarketChange
+                            } else {
+                                DiscoveryProjectionMutation::Updated
+                            },
+                            merged,
+                            false,
+                            approval_removed,
+                            qualification_removed,
+                        )
+                    }
                 }
-            }
-        };
+            };
 
         if is_new {
             insert_discovery_token(
@@ -205,8 +224,9 @@ impl Database {
         let sequence = sqlx::query_scalar::<_, i64>(
             "UPDATE discovery_projection_state \
              SET observed = observed + $1, \
-                 pending = GREATEST(pending - 1, 0), \
+                 queued_facts = GREATEST(queued_facts - 1, 0), \
                  approved = GREATEST(approved - $2, 0), \
+                 qualified = GREATEST(qualified - $3, 0), \
                  sequence = sequence + 1, \
                  updated_at = NOW() \
              WHERE singleton = TRUE \
@@ -214,6 +234,7 @@ impl Database {
         )
         .bind(if is_new { 1_i64 } else { 0_i64 })
         .bind(if approval_removed { 1_i64 } else { 0_i64 })
+        .bind(if qualification_removed { 1_i64 } else { 0_i64 })
         .fetch_one(&mut *transaction)
         .await?;
 
@@ -244,10 +265,18 @@ impl Database {
     ) -> Result<DiscoveryProjectionMutation, PersistenceError> {
         require_non_empty(decision_source, "decision_source")?;
         require_non_empty(decision_version, "decision_version")?;
-        validate_token_shape(token)?;
         if token.stage != DiscoveryStage::Approved {
             return Err(PersistenceError::ApprovalMustBeExplicit);
         }
+        if token.qualification.as_ref().is_none_or(|qualification| {
+            qualification.decision != QualificationDecision::Pass
+                || qualification.completeness != WindowCompleteness::Complete
+        }) {
+            return Err(PersistenceError::CandidateNotQualified {
+                mint: token.mint.clone(),
+            });
+        }
+        validate_token_shape(token)?;
 
         let mut transaction = self.pool.begin().await?;
         let existing = sqlx::query_as::<_, StoredTokenRow>(
@@ -265,6 +294,17 @@ impl Database {
 
         let stored: DiscoveryToken = serde_json::from_value(existing.token)?;
         validate_stored_stage(&existing.stage, stored.stage)?;
+        if !matches!(
+            stored.stage,
+            DiscoveryStage::Qualified | DiscoveryStage::Approved
+        ) || stored.qualification.as_ref().is_none_or(|qualification| {
+            qualification.decision != QualificationDecision::Pass
+                || qualification.completeness != WindowCompleteness::Complete
+        }) {
+            return Err(PersistenceError::CandidateNotQualified {
+                mint: token.mint.clone(),
+            });
+        }
         validate_promotion_identity(&stored, token)?;
         let was_approved = stored.stage == DiscoveryStage::Approved;
         let promoted = merge_approval(stored, token.clone());
@@ -347,8 +387,8 @@ impl Database {
 
         let sequence = sqlx::query_scalar::<_, i64>(
             "UPDATE discovery_projection_state \
-             SET pending = GREATEST(pending - 1, 0), \
-                 rejected = rejected + 1, \
+             SET queued_facts = GREATEST(queued_facts - 1, 0), \
+                 processing_failures = processing_failures + 1, \
                  sequence = sequence + 1, \
                  updated_at = NOW() \
              WHERE singleton = TRUE \
@@ -407,7 +447,9 @@ impl Database {
             .await?;
 
         let state = sqlx::query_as::<_, ProjectionStateRow>(
-            "SELECT sequence, mode, observed, pending, approved, rejected, \
+            "SELECT sequence, mode, observed, queued_facts, qualified, \
+                    qualification_pending, qualification_rejected, \
+                    qualification_unknown, processing_failures, approved, \
                     flow_per_minute \
              FROM discovery_projection_state \
              WHERE singleton = TRUE",
@@ -417,12 +459,15 @@ impl Database {
         let mode = parse_discovery_mode(&state.mode)?;
         let tokens_total = match mode {
             DiscoveryMode::ObserveAll => state.observed,
+            DiscoveryMode::QualifiedOnly => state.qualified,
             DiscoveryMode::ApprovedOnly => state.approved,
         };
         let token_rows = sqlx::query_scalar::<_, Value>(
             "SELECT token \
              FROM discovery_tokens \
-             WHERE $1 = 'OBSERVE_ALL' OR stage = 'APPROVED' \
+             WHERE $1 = 'OBSERVE_ALL' \
+                OR ($1 = 'QUALIFIED_ONLY' AND stage IN ('QUALIFIED', 'APPROVED')) \
+                OR ($1 = 'APPROVED_ONLY' AND stage = 'APPROVED') \
              ORDER BY observed_slot DESC, mint \
              LIMIT $2",
         )
@@ -432,7 +477,7 @@ impl Database {
         .await?;
         let rejection_rows = sqlx::query_as::<_, RejectionRow>(
             "SELECT reason_code, count, last_seen_unix_ms \
-             FROM discovery_rejection_summaries \
+             FROM qualification_rejection_summaries \
              ORDER BY count DESC, reason_code",
         )
         .fetch_all(&mut *transaction)
@@ -443,11 +488,26 @@ impl Database {
             .map(|value| {
                 let token: DiscoveryToken = serde_json::from_value(value)?;
                 validate_token_shape(&token)?;
-                if mode == DiscoveryMode::ApprovedOnly && token.stage != DiscoveryStage::Approved {
-                    return Err(PersistenceError::InvalidStoredValue {
-                        field: "discovery_tokens.stage",
-                        value: discovery_stage_name(token.stage).to_owned(),
-                    });
+                match mode {
+                    DiscoveryMode::ObserveAll => {}
+                    DiscoveryMode::QualifiedOnly
+                        if !matches!(
+                            token.stage,
+                            DiscoveryStage::Qualified | DiscoveryStage::Approved
+                        ) =>
+                    {
+                        return Err(PersistenceError::InvalidStoredValue {
+                            field: "discovery_tokens.stage",
+                            value: discovery_stage_name(token.stage).to_owned(),
+                        });
+                    }
+                    DiscoveryMode::ApprovedOnly if token.stage != DiscoveryStage::Approved => {
+                        return Err(PersistenceError::InvalidStoredValue {
+                            field: "discovery_tokens.stage",
+                            value: discovery_stage_name(token.stage).to_owned(),
+                        });
+                    }
+                    DiscoveryMode::QualifiedOnly | DiscoveryMode::ApprovedOnly => {}
                 }
                 Ok(token)
             })
@@ -457,7 +517,7 @@ impl Database {
             .map(|row| {
                 Ok(RejectionSummary {
                     reason_code: row.reason_code,
-                    count: to_u64(row.count, "discovery_rejection_summaries.count")?,
+                    count: to_u64(row.count, "qualification_rejection_summaries.count")?,
                     last_seen_unix_ms: row.last_seen_unix_ms,
                 })
             })
@@ -475,9 +535,32 @@ impl Database {
             tokens_truncated,
             counters: DiscoveryCounters {
                 observed: to_u64(state.observed, "discovery_projection_state.observed")?,
-                pending: to_u64(state.pending, "discovery_projection_state.pending")?,
+                pending: to_u64(
+                    state.queued_facts,
+                    "discovery_projection_state.queued_facts",
+                )?,
+                qualified: to_u64(state.qualified, "discovery_projection_state.qualified")?,
+                qualification_pending: to_u64(
+                    state.qualification_pending,
+                    "discovery_projection_state.qualification_pending",
+                )?,
+                qualification_rejected: to_u64(
+                    state.qualification_rejected,
+                    "discovery_projection_state.qualification_rejected",
+                )?,
+                qualification_unknown: to_u64(
+                    state.qualification_unknown,
+                    "discovery_projection_state.qualification_unknown",
+                )?,
+                processing_failures: to_u64(
+                    state.processing_failures,
+                    "discovery_projection_state.processing_failures",
+                )?,
                 approved: to_u64(state.approved, "discovery_projection_state.approved")?,
-                rejected: to_u64(state.rejected, "discovery_projection_state.rejected")?,
+                rejected: to_u64(
+                    state.qualification_rejected,
+                    "discovery_projection_state.qualification_rejected",
+                )?,
                 flow_per_minute: state
                     .flow_per_minute
                     .map(|value| to_u64(value, "discovery_projection_state.flow_per_minute"))
@@ -584,15 +667,28 @@ impl Database {
                         WHERE stage = 'APPROVED') AS approved, \
                     (SELECT COUNT(*) FROM observation_work \
                         WHERE work_kind = 'DISCOVERY' \
-                          AND status IN ('PENDING', 'PROCESSING')) AS pending, \
+                          AND status IN ('PENDING', 'PROCESSING')) AS queued_facts, \
+                    (SELECT COUNT(*) FROM discovery_tokens \
+                        WHERE stage IN ('QUALIFIED', 'APPROVED')) AS qualified, \
+                    (SELECT COUNT(*) FROM discovery_windows \
+                        WHERE status = 'ACTIVE') AS qualification_pending, \
+                    (SELECT COUNT(*) FROM qualification_assessments \
+                        WHERE decision = 'REJECT') AS qualification_rejected, \
+                    (SELECT COUNT(*) FROM qualification_assessments \
+                        WHERE decision = 'UNKNOWN') AS qualification_unknown, \
                     (SELECT COALESCE(SUM(count), 0) \
-                        FROM discovery_rejection_summaries) AS rejected\
+                        FROM discovery_processing_failure_summaries) \
+                        AS processing_failures\
              ) \
              UPDATE discovery_projection_state AS state \
              SET observed = counts.observed, \
                  approved = counts.approved, \
-                 pending = counts.pending, \
-                 rejected = counts.rejected, \
+                 queued_facts = counts.queued_facts, \
+                 qualified = counts.qualified, \
+                 qualification_pending = counts.qualification_pending, \
+                 qualification_rejected = counts.qualification_rejected, \
+                 qualification_unknown = counts.qualification_unknown, \
+                 processing_failures = counts.processing_failures, \
                  sequence = state.sequence + 1, \
                  updated_at = NOW() \
              FROM counts \

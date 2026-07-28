@@ -68,6 +68,14 @@ impl Database {
                                + ($1 * INTERVAL '1 millisecond')\
                       )\
                   ) \
+                  AND NOT EXISTS (\
+                    SELECT 1 \
+                    FROM discovery_window_observations AS member \
+                    JOIN discovery_windows AS active_window \
+                      ON active_window.id = member.window_id \
+                    WHERE member.observation_id = observation.id \
+                      AND active_window.status = 'ACTIVE'\
+                  ) \
                 ORDER BY observation.first_seen_at, observation.id \
                 LIMIT $2 \
                 FOR UPDATE OF observation SKIP LOCKED\

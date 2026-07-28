@@ -112,6 +112,7 @@ pub(crate) fn parse_venue(value: &str) -> Result<Venue, PersistenceError> {
 pub(crate) fn discovery_mode_name(mode: DiscoveryMode) -> &'static str {
     match mode {
         DiscoveryMode::ObserveAll => "OBSERVE_ALL",
+        DiscoveryMode::QualifiedOnly => "QUALIFIED_ONLY",
         DiscoveryMode::ApprovedOnly => "APPROVED_ONLY",
     }
 }
@@ -119,6 +120,7 @@ pub(crate) fn discovery_mode_name(mode: DiscoveryMode) -> &'static str {
 pub(crate) fn parse_discovery_mode(value: &str) -> Result<DiscoveryMode, PersistenceError> {
     match value {
         "OBSERVE_ALL" => Ok(DiscoveryMode::ObserveAll),
+        "QUALIFIED_ONLY" => Ok(DiscoveryMode::QualifiedOnly),
         "APPROVED_ONLY" => Ok(DiscoveryMode::ApprovedOnly),
         _ => Err(PersistenceError::InvalidStoredValue {
             field: "discovery_projection_state.mode",
@@ -130,6 +132,7 @@ pub(crate) fn parse_discovery_mode(value: &str) -> Result<DiscoveryMode, Persist
 pub(crate) fn discovery_stage_name(stage: DiscoveryStage) -> &'static str {
     match stage {
         DiscoveryStage::Observed => "OBSERVED",
+        DiscoveryStage::Qualified => "QUALIFIED",
         DiscoveryStage::Approved => "APPROVED",
     }
 }

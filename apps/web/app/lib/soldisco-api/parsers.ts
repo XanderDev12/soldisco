@@ -5,6 +5,7 @@ import type {
   DiscoverySnapshot,
   DiscoveryStage,
   DiscoveryToken,
+  DiscoveryWindowSummary,
   HealthResponse,
   IntegerSettingBounds,
   LiveEnvelope,
@@ -12,6 +13,9 @@ import type {
   PrefilterDefaultsBounds,
   PrefilterDefaultsResponse,
   PrefilterDefaultsValues,
+  QualificationDefaultsBounds,
+  QualificationDefaultsResponse,
+  QualificationDefaultsValues,
   RejectionSummary,
   SourceProgram,
   StreamCommandResponse,
@@ -41,11 +45,13 @@ const streamStatuses = [
 
 const discoveryModes = [
   "OBSERVE_ALL",
+  "QUALIFIED_ONLY",
   "APPROVED_ONLY",
 ] as const satisfies readonly DiscoveryMode[];
 
 const discoveryStages = [
   "OBSERVED",
+  "QUALIFIED",
   "APPROVED",
 ] as const satisfies readonly DiscoveryStage[];
 
@@ -74,6 +80,16 @@ const prefilterDefaultFields = [
   "rpc_request_timeout_ms",
   "rpc_rate_limit_cooldown_ms",
 ] as const satisfies readonly (keyof PrefilterDefaultsValues)[];
+
+const qualificationDefaultFields = [
+  "minimum_trades",
+  "minimum_unique_traders",
+  "minimum_buys",
+  "minimum_sells",
+  "minimum_native_quote_volume_units",
+  "minimum_stable_quote_volume_units",
+  "maximum_single_wallet_quote_share_bps",
+] as const satisfies readonly (keyof QualificationDefaultsValues)[];
 
 function recordAt(value: unknown, path: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -121,6 +137,14 @@ function nullableCountAt(value: unknown, path: string): number | null {
   return safeIntegerAt(value, path, 0);
 }
 
+function nullableSafeIntegerAt(
+  value: unknown,
+  path: string,
+): number | null {
+  if (value === null) return null;
+  return safeIntegerAt(value, path);
+}
+
 function nullableScoreAt(value: unknown, path: string): number | null {
   if (value === null) return null;
   const score = safeIntegerAt(value, path, 0);
@@ -135,8 +159,8 @@ function parseIntegerBounds(
   path: string,
 ): IntegerSettingBounds {
   const bounds = recordAt(value, path);
-  const minimum = safeIntegerAt(bounds.minimum, `${path}.minimum`, 1);
-  const maximum = safeIntegerAt(bounds.maximum, `${path}.maximum`, 1);
+  const minimum = safeIntegerAt(bounds.minimum, `${path}.minimum`, 0);
+  const maximum = safeIntegerAt(bounds.maximum, `${path}.maximum`, 0);
   if (maximum < minimum) {
     throw new ContractParseError(
       `${path}.maximum`,
@@ -144,6 +168,56 @@ function parseIntegerBounds(
     );
   }
   return { minimum, maximum };
+}
+
+function parseQualificationBounds(
+  value: unknown,
+  path: string,
+): QualificationDefaultsBounds {
+  const source = recordAt(value, path);
+  return Object.fromEntries(
+    qualificationDefaultFields.map((field) => [
+      field,
+      parseIntegerBounds(source[field], `${path}.${field}`),
+    ]),
+  ) as QualificationDefaultsBounds;
+}
+
+function parseQualificationValues(
+  value: unknown,
+  bounds: QualificationDefaultsBounds,
+  path: string,
+): QualificationDefaultsValues {
+  const source = recordAt(value, path);
+  const values = Object.fromEntries(
+    qualificationDefaultFields.map((field) => {
+      const fieldPath = `${path}.${field}`;
+      const parsed = safeIntegerAt(source[field], fieldPath, 0);
+      const allowed = bounds[field];
+      if (parsed < allowed.minimum || parsed > allowed.maximum) {
+        throw new ContractParseError(
+          fieldPath,
+          `an integer from ${allowed.minimum} through ${allowed.maximum}`,
+        );
+      }
+      return [field, parsed];
+    }),
+  ) as QualificationDefaultsValues;
+
+  for (const field of [
+    "minimum_unique_traders",
+    "minimum_buys",
+    "minimum_sells",
+  ] as const) {
+    if (values[field] > values.minimum_trades) {
+      throw new ContractParseError(
+        `${path}.${field}`,
+        "a value no greater than minimum_trades",
+      );
+    }
+  }
+
+  return values;
 }
 
 function parsePrefilterBounds(
@@ -248,11 +322,145 @@ function parseActivity(value: unknown, path: string): DiscoveryActivity {
   };
 }
 
+function parseQualificationSummary(
+  value: unknown,
+  path: string,
+): DiscoveryWindowSummary {
+  const summary = recordAt(value, path);
+  const maximumWalletShare = nullableCountAt(
+    summary.maximum_single_wallet_quote_share_bps,
+    `${path}.maximum_single_wallet_quote_share_bps`,
+  );
+  if (maximumWalletShare !== null && maximumWalletShare > 10_000) {
+    throw new ContractParseError(
+      `${path}.maximum_single_wallet_quote_share_bps`,
+      "an integer from 0 through 10000 or null",
+    );
+  }
+
+  return {
+    window_revision: safeIntegerAt(
+      summary.window_revision,
+      `${path}.window_revision`,
+      1,
+    ),
+    ruleset_revision: safeIntegerAt(
+      summary.ruleset_revision,
+      `${path}.ruleset_revision`,
+      1,
+    ),
+    opened_unix_ms: safeIntegerAt(
+      summary.opened_unix_ms,
+      `${path}.opened_unix_ms`,
+      0,
+    ),
+    closed_unix_ms: safeIntegerAt(
+      summary.closed_unix_ms,
+      `${path}.closed_unix_ms`,
+      0,
+    ),
+    evaluated_unix_ms: safeIntegerAt(
+      summary.evaluated_unix_ms,
+      `${path}.evaluated_unix_ms`,
+      0,
+    ),
+    decision: enumAt(summary.decision, `${path}.decision`, [
+      "PASS",
+      "REJECT",
+      "UNKNOWN",
+    ] as const),
+    completeness: enumAt(summary.completeness, `${path}.completeness`, [
+      "COMPLETE",
+      "INCOMPLETE",
+    ] as const),
+    reason_codes: arrayAt(
+      summary.reason_codes,
+      `${path}.reason_codes`,
+      stringAt,
+    ),
+    trades: safeIntegerAt(summary.trades, `${path}.trades`, 0),
+    buys: safeIntegerAt(summary.buys, `${path}.buys`, 0),
+    sells: safeIntegerAt(summary.sells, `${path}.sells`, 0),
+    unique_traders: safeIntegerAt(
+      summary.unique_traders,
+      `${path}.unique_traders`,
+      0,
+    ),
+    unique_buyers: safeIntegerAt(
+      summary.unique_buyers,
+      `${path}.unique_buyers`,
+      0,
+    ),
+    unique_sellers: safeIntegerAt(
+      summary.unique_sellers,
+      `${path}.unique_sellers`,
+      0,
+    ),
+    buy_base_volume_units: stringAt(
+      summary.buy_base_volume_units,
+      `${path}.buy_base_volume_units`,
+    ),
+    sell_base_volume_units: stringAt(
+      summary.sell_base_volume_units,
+      `${path}.sell_base_volume_units`,
+    ),
+    buy_quote_volume_units: stringAt(
+      summary.buy_quote_volume_units,
+      `${path}.buy_quote_volume_units`,
+    ),
+    sell_quote_volume_units: stringAt(
+      summary.sell_quote_volume_units,
+      `${path}.sell_quote_volume_units`,
+    ),
+    maximum_single_wallet_quote_share_bps: maximumWalletShare,
+    price_change_bps: nullableSafeIntegerAt(
+      summary.price_change_bps,
+      `${path}.price_change_bps`,
+    ),
+    first_base_reserve_units: nullableStringAt(
+      summary.first_base_reserve_units,
+      `${path}.first_base_reserve_units`,
+    ),
+    first_quote_reserve_units: nullableStringAt(
+      summary.first_quote_reserve_units,
+      `${path}.first_quote_reserve_units`,
+    ),
+    latest_base_reserve_units: nullableStringAt(
+      summary.latest_base_reserve_units,
+      `${path}.latest_base_reserve_units`,
+    ),
+    latest_quote_reserve_units: nullableStringAt(
+      summary.latest_quote_reserve_units,
+      `${path}.latest_quote_reserve_units`,
+    ),
+  };
+}
+
 export function parseDiscoveryToken(
   value: unknown,
   path = "$",
 ): DiscoveryToken {
   const token = recordAt(value, path);
+  const stage = enumAt(token.stage, `${path}.stage`, discoveryStages);
+  const qualification =
+    token.qualification === null || token.qualification === undefined
+      ? null
+      : parseQualificationSummary(
+          token.qualification,
+          `${path}.qualification`,
+        );
+  if (
+    (stage === "QUALIFIED" || stage === "APPROVED") &&
+    (qualification === null ||
+      qualification.decision !== "PASS" ||
+      qualification.completeness !== "COMPLETE")
+  ) {
+    throw new ContractParseError(
+      `${path}.qualification`,
+      "complete PASS evidence for a QUALIFIED or APPROVED token",
+    );
+  }
+
   return {
     mint: stringAt(token.mint, `${path}.mint`),
     name: nullableStringAt(token.name, `${path}.name`),
@@ -272,7 +480,7 @@ export function parseDiscoveryToken(
       `${path}.source_program`,
       sourcePrograms,
     ),
-    stage: enumAt(token.stage, `${path}.stage`, discoveryStages),
+    stage,
     last_event_kind: stringAt(
       token.last_event_kind,
       `${path}.last_event_kind`,
@@ -295,6 +503,7 @@ export function parseDiscoveryToken(
       `${path}.latest_signature`,
     ),
     activity: parseActivity(token.activity, `${path}.activity`),
+    qualification,
     risk_score: nullableScoreAt(token.risk_score, `${path}.risk_score`),
     opportunity_score: nullableScoreAt(
       token.opportunity_score,
@@ -310,6 +519,31 @@ function parseCounters(value: unknown, path: string): DiscoveryCounters {
     pending: safeIntegerAt(counters.pending, `${path}.pending`, 0),
     approved: safeIntegerAt(counters.approved, `${path}.approved`, 0),
     rejected: safeIntegerAt(counters.rejected, `${path}.rejected`, 0),
+    qualified: safeIntegerAt(
+      counters.qualified,
+      `${path}.qualified`,
+      0,
+    ),
+    qualification_pending: safeIntegerAt(
+      counters.qualification_pending,
+      `${path}.qualification_pending`,
+      0,
+    ),
+    qualification_rejected: safeIntegerAt(
+      counters.qualification_rejected,
+      `${path}.qualification_rejected`,
+      0,
+    ),
+    qualification_unknown: safeIntegerAt(
+      counters.qualification_unknown,
+      `${path}.qualification_unknown`,
+      0,
+    ),
+    processing_failures: safeIntegerAt(
+      counters.processing_failures,
+      `${path}.processing_failures`,
+      0,
+    ),
     flow_per_minute: nullableCountAt(
       counters.flow_per_minute,
       `${path}.flow_per_minute`,
@@ -398,6 +632,23 @@ export function parsePrefilterDefaults(
       response.apply_requirement,
       "$.apply_requirement",
       ["STREAM_RESTART"] as const,
+    ),
+  };
+}
+
+export function parseQualificationDefaults(
+  value: unknown,
+): QualificationDefaultsResponse {
+  const response = recordAt(value, "$");
+  const bounds = parseQualificationBounds(response.bounds, "$.bounds");
+  return {
+    revision: safeIntegerAt(response.revision, "$.revision", 1),
+    values: parseQualificationValues(response.values, bounds, "$.values"),
+    bounds,
+    apply_requirement: enumAt(
+      response.apply_requirement,
+      "$.apply_requirement",
+      ["NEW_WINDOWS"] as const,
     ),
   };
 }

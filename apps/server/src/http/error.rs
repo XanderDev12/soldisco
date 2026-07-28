@@ -87,6 +87,20 @@ impl From<PersistenceError> for ApiError {
                 "PREFILTER_DEFAULTS_REVISION_CONFLICT",
                 "The prefilter defaults changed after this form was loaded. Refresh and try again.",
             ),
+            PersistenceError::InvalidQualificationDefaults(_)
+            | PersistenceError::MustBePositive {
+                field: "qualification expected_revision",
+            }
+            | PersistenceError::ValueOutOfRange {
+                field: "qualification expected_revision",
+            } => Self::bad_request(
+                "INVALID_QUALIFICATION_DEFAULTS",
+                "The submitted qualification defaults are invalid.",
+            ),
+            PersistenceError::QualificationDefaultsRevisionConflict { .. } => Self::conflict(
+                "QUALIFICATION_DEFAULTS_REVISION_CONFLICT",
+                "The qualification defaults changed after this form was loaded. Refresh and try again.",
+            ),
             error => {
                 error!(%error, "persistence operation failed");
                 Self::service_unavailable(

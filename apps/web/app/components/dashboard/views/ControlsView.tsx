@@ -1,6 +1,7 @@
 import type { ExecutionMode } from "../types";
 import { ExecutionModeCard } from "../controls/ExecutionModeCard";
 import { PrefilterDefaultsSection } from "../controls/PrefilterDefaultsSection";
+import { QualificationDefaultsSection } from "../controls/QualificationDefaultsSection";
 import { StreamControlCard } from "../controls/StreamControlCard";
 import { SectionHeader } from "./SectionViewPrimitives";
 import type { BackendStatusViewModel } from "../../../lib/soldisco-api/viewModels";
@@ -23,7 +24,7 @@ export function ControlsView({
       <SectionHeader
         eyebrow="WORKSPACE SETTINGS"
         title="Controls"
-        description="Manage local stream, execution mode, and global collector defaults."
+        description="Manage local stream, execution mode, collector defaults, and qualification rules."
         stats={[]}
       />
       <div className="section-view__body section-view__grid controls-grid">
@@ -35,6 +36,9 @@ export function ControlsView({
         <PrefilterDefaultsSection
           backendConnected={backend.connection === "CONNECTED"}
           streamStatus={backend.stream.status}
+        />
+        <QualificationDefaultsSection
+          backendConnected={backend.connection === "CONNECTED"}
         />
       </div>
     </>
