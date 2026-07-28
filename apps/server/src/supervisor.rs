@@ -190,9 +190,7 @@ impl StreamSupervisor {
         }
 
         let persisted = self.database.load_prefilter_defaults().await?;
-        let pipeline_config = self
-            .pipeline_config
-            .with_prefilter_defaults(persisted.values);
+        let pipeline_config = self.pipeline_config.with_prefilter_defaults(persisted);
         let discovery_rpc = pipeline_config.discovery_rpc_gate();
         self.set_status(StreamStatus::Starting).await;
         let spawned = match spawn_pipeline(

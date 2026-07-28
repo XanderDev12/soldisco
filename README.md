@@ -4,8 +4,9 @@ Soldisco is a local-first Solana token discovery and strategy-research
 workspace. The existing React/TypeScript interface remains the browser layer.
 A single Rust application now collects Pump and PumpSwap activity directly
 from Solana, persists normalized evidence in local PostgreSQL, and publishes a
-read-only discovery projection to the interface. Deterministic screening,
-Raydium enrichment, strategies, AI analysis, and trading are later milestones.
+read-only discovery projection to the interface. Bounded-window activity
+qualification is implemented; deterministic scam/rug screening, Raydium
+enrichment, strategies, AI analysis, and trading remain later milestones.
 
 ## Selected local topology
 
@@ -34,39 +35,58 @@ local React app is connected to the Rust API.
    subscription delivery, and unrelated firehose traffic are also skipped
    without retrying the transaction or reconnecting a healthy subscription.
 4. Normalized observations and durable work are committed to PostgreSQL before
-   downstream processing. Chain identity deduplicates accepted live data, and
-   the database is immutably bound to the configured Solana network before
-   ingestion.
+   downstream processing. Chain identity deduplicates accepted live data.
+   Compatible replay keeps the canonical receipt (the earliest compatible
+   receipt for ordinary facts, while an existing window opener stays frozen)
+   and canonical direct-event evidence; reuse of the identity with different
+   immutable evidence fails closed. The database is immutably bound to the
+   configured Solana network before ingestion.
 5. A fresh discovery log immediately opens a short provisional in-memory
    observation window so initial trades cannot race past HTTP corroboration.
-   The window is confirmed only after the one-shot transaction normalizes
-   successfully; otherwise it and its queued activity are cancelled. Matching
-   Pump mint or PumpSwap pool activity is then routed directly from the
-   existing program-log feeds and persisted without an HTTP fetch. This
-   milestone is deliberately live-first: reconnects resume at the current head
-   and do not backfill missed history.
-6. The discovery worker projects structurally valid candidates and their
-   venue-scoped activity. HTTP supplies bounded authoritative snapshots with
-   explicit truncation metadata; coalesced named `soldisco` SSE events tell the
-   browser when to refresh them.
-7. Attributable malformed or unresolved-market evidence that reaches the
+   Successful normalization atomically creates its durable PostgreSQL window,
+   pins the Prefilter and Qualification Defaults revisions, and records exact
+   receipt-time membership for matching Pump mint or PumpSwap pool facts.
+   Failed discovery cancels the provisional window. This milestone remains
+   live-first: reconnects resume at the current head without backfill.
+6. Window activity is counted once from each canonical direct Pump/PumpSwap
+   event. The pinned programs' silent event self-CPI is accepted only when it
+   immediately pairs 1:1 with that direct event inside the same top-level
+   instruction; it corroborates rather than duplicates the event. CPI-only,
+   out-of-order, mismatched, malformed, truncated, or unbalanced same-source
+   logs make affected windows incomplete without an activity `getTransaction`
+   call.
+7. When the non-extending interval closes, a complete finalization waits for
+   source progress through the close boundary, every admitted batch to settle,
+   and same-window projection work to finish. Stop/disconnect cancellation and
+   finalization claims are serialized: cancellation first produces `UNKNOWN`;
+   an already eligible claim first freezes its prior completeness. The server
+   then freezes versioned trades, buy/sell volume, unique-wallet,
+   wallet-concentration, price, reserve, and lifecycle evidence. Versioned
+   rules produce `PASS`, `REJECT`, or `UNKNOWN` before the result, rule
+   evidence, counters, and projection commit together.
+8. The default `QUALIFIED_ONLY` discovery feed shows current candidates whose
+   complete window passed this inexpensive activity-quality gate. HTTP supplies
+   bounded authoritative snapshots with explicit truncation metadata;
+   coalesced named `soldisco` SSE events tell the browser when to refresh.
+9. Attributable malformed or unresolved-market evidence that reaches the
    authoritative decoder enters bounded quarantine. Maintenance prunes
    eligible terminal raw history in bounded batches, while storage-limit and
    network-identity failures enter terminal `ERROR`.
 
-The current projection deliberately runs in `OBSERVE_ALL` mode. Every
-structurally valid decoded Pump or PumpSwap candidate can appear as `OBSERVED`;
-there are no pass thresholds, approvals, rejections, risk scores, or
-opportunity scores yet. Unsupported data is ignored and attributable malformed
-evidence is quarantined; neither is treated as a candidate. This makes the
-connected pipeline observable without pretending that the future safety gate
-exists.
+`QUALIFIED` means only that a complete, exact-market observation window met the
+configured activity thresholds. It is not scam clearance, a safety or ROI
+approval, a recommendation, a strategy match, or permission to trade.
+`REJECT` means the inexpensive qualification rules were not met; `UNKNOWN`
+means the window or required evidence was incomplete. Risk and opportunity
+scores remain unavailable. Diagnostic `OBSERVE_ALL` mode still exists for
+pipeline validation, where structurally valid candidates remain `OBSERVED`.
 
 This local milestone also has an explicit operating boundary: the 5 GiB
-database guard is not a whole-machine free-space/WAL monitor, observation
-windows are intentionally in-memory, and durable market/discovery aggregates
-are not yet archived. Keep disk headroom available and do not treat
-`OBSERVE_ALL` collection as an unattended, indefinite deployment.
+database guard is not a whole-machine free-space/WAL monitor. Durable windows,
+feature snapshots, assessments, and current market/discovery aggregates are
+not yet archived, so continuous mainnet collection grows PostgreSQL until the
+guard stops intake. Keep disk headroom available and do not treat the current
+local runtime as an unattended, indefinite deployment.
 
 ## Workspace direction
 
@@ -79,8 +99,8 @@ are not yet archived. Keep disk headroom available and do not treat
   decoding
 - `crates/solana-rpc` — provider-neutral Solana HTTP, PubSub, health, and
   reserved recovery behavior
-- `crates/discovery-engine` — bounded observation windows, rolling metrics, and
-  future cheap qualification
+- `crates/discovery-engine` — bounded observation windows, immutable metrics,
+  and versioned activity qualification
 - `crates/risk-engine` — deterministic evidence, rules, and scoring
 - `crates/persistence` — the only SQLx and PostgreSQL implementation boundary
 - `crates/projections` — rebuildable browser read-model boundary
@@ -88,10 +108,11 @@ are not yet archived. Keep disk headroom available and do not treat
 - `docs` — product, architecture, configuration, and milestone decisions
 
 These crates compile into one server binary. Background workers are supervised
-Tokio tasks inside that process, not microservices. Their queues, active
-windows, and signals are ephemeral performance tools; PostgreSQL is the durable
-observation and work source. The database commit happens before downstream work
-or UI publication.
+Tokio tasks inside that process, not microservices. Their queues, provisional
+window tokens, and signals are ephemeral performance tools; PostgreSQL owns
+confirmed window identity, admitted observations, snapshots, assessments, and
+unfinished work. The database commit happens before downstream work or UI
+publication.
 
 Raydium remains a planned post-Pump venue-evidence layer, not a replacement for
 Pump intake and not an excuse to combine liquidity or price across unrelated
@@ -105,16 +126,22 @@ component may sign or submit transactions.
 
 The discovery console is wired to authoritative local stream state, discovery
 snapshots, token inspection, start/stop commands, and named SSE notifications.
-The current feed shows only real `OBSERVED` candidates decoded by the backend;
-it does not synthesize data or manufacture unavailable risk and rating values.
-The remaining workspace views are UI shells for later milestones. Paper views
-have no wallet dependency; wallet controls belong only to future Live mode.
+The default feed shows only real `QUALIFIED` candidates produced by the
+backend; it does not synthesize data or manufacture unavailable risk and rating
+values. Prefilter and Qualification Defaults persist in PostgreSQL across
+browser, server, and computer restarts unless the local database is
+deliberately deleted. The requested Start/Stop intent is PostgreSQL state too,
+so the Rust server can restore a requested-running stream after restart.
+Execution-mode presentation and the adjustable sidebar/inspector widths are
+safe browser-local preferences stored in `localStorage`; they do not grant
+wallet or execution authority. Unsaved settings drafts, order drafts, current
+navigation, selection, and modal state remain transient. The remaining
+workspace views are UI shells for later milestones. Paper views have no wallet
+dependency; wallet controls belong only to future Live mode.
 
-Window-based qualification, deterministic scam/rug screening, approval and
-rejection projections, Raydium enrichment, strategy configuration, wallet
-connections, quotes, purchases, sales, and position reconciliation are not
-implemented. The current observation window gathers activity only; it does not
-make a decision.
+Deterministic scam/rug screening, safety approval, Raydium enrichment, strategy
+configuration, wallet connections, quotes, purchases, sales, and position
+reconciliation are not implemented.
 
 ## Run locally
 

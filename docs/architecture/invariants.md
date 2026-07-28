@@ -9,8 +9,14 @@ deployment topology.
 - `OBSERVED` means only that supported evidence decoded and normalized
   structurally; it is never a safety pass, approval, recommendation, or trade
   signal.
-- `OBSERVE_ALL` may expose pre-screening candidates for pipeline validation, but
-  it cannot manufacture thresholds, decisions, or scores that have not run.
+- `QUALIFIED` means only that one complete bounded window passed its pinned
+  activity-quality thresholds. It is not scam/rug approval, a risk or
+  opportunity score, an ROI prediction, a recommendation, a strategy match, or
+  trade authority.
+- `APPROVED` is reserved for a future deeper deterministic safety decision and
+  is never inferred from `QUALIFIED`.
+- `OBSERVE_ALL` may expose pre-qualification candidates for pipeline
+  validation, but it cannot manufacture decisions or scores that have not run.
 - AI output is advisory and cannot approve a token, change deterministic risk,
   create user intent, sign, or submit a transaction.
 - A strategy match is evidence, not execution authority.
@@ -22,6 +28,14 @@ deployment topology.
 
 - Every score and decision references its source evidence, definition version,
   freshness, and calculation time.
+- Every confirmed qualification window records its exact identity, half-open
+  receipt-time bounds, collector run, and pinned Prefilter and Qualification
+  Defaults revisions and values.
+- Window membership identity is explicit and never duplicated. Compatible
+  replay may move a non-opening member to an earlier canonical receipt without
+  changing its chain identity or evidence; a durable opener and its bounds stay
+  frozen. Feature snapshots, assessments, and per-rule results are append-only
+  audit evidence.
 - Source event time and Soldisco receipt time are separate fields.
 - Live receipt time is assigned when a subscription record enters available
   bounded collector work capacity; it is not claimed to be the provider's
@@ -56,15 +70,47 @@ deployment topology.
   mode intentionally performs no historical recovery after a disconnect or
   restart.
 - Within one continuously running stream instance, duplicate Pump/PumpSwap
-  subscription delivery shares one discovery-signature claim for the full freshness
-  horizon. Each selected signature receives at most one globally paced HTTP
-  transaction attempt. A discovery that ages out before request admission is
-  skipped without HTTP. Failure, timeout, rate limiting, or unavailability
-  skips an attempted signature rather than retrying it or restarting PubSub; a
-  provider rate-limit response can delay only later, distinct signatures.
+  subscription delivery shares one discovery-signature claim for the full
+  freshness horizon. Each selected signature receives at most one globally
+  paced HTTP transaction attempt. A discovery that ages out before request
+  admission is skipped without HTTP. Failure, timeout, rate limiting, or
+  unavailability skips an attempted signature rather than retrying it or
+  restarting PubSub; a provider rate-limit response can delay only later,
+  distinct signatures.
 - A fresh direct discovery log may provision an in-memory activity window, but
-  the window and its receipt-time activity become valid only after the
-  authoritative discovery normalizes successfully. Failure cancels them.
+  the window becomes a durable confirmed record only after the authoritative
+  discovery normalizes successfully. Failure cancels it and its queued
+  provisional activity.
+- Matching activity belongs to a confirmed window only when its Soldisco
+  receipt time is inside `[opened_at, closes_at)`.
+- Direct Pump/PumpSwap program-data events are canonical. An immediately
+  following silent event self-CPI may corroborate a direct copy only under
+  ordered 1:1 pairing in the same instruction; it never adds a second event.
+  CPI-only, out-of-order, mismatched, malformed, truncated, or unbalanced
+  same-source logs make affected windows incomplete without activity HTTP
+  recovery.
+- A compatible duplicate chain coordinate keeps one canonical receipt and
+  direct evidence without duplicate work or membership. Ordinary facts keep
+  the earliest compatible receipt; an existing window opener and its bounds
+  remain frozen. Different immutable evidence under that coordinate is a
+  conflict, not a correction or second observation.
+- A complete finalization claim requires source progress through the close
+  boundary and settlement of every admitted batch. Stop/source cancellation
+  and the claim share one ordering boundary: cancellation first freezes
+  `UNKNOWN`, while a claim first freezes completeness for that attempt.
+- Durable finalization waits until same-window structural projection work is no
+  longer pending or processing and verifies canonical evidence under the
+  database transaction.
+- Stop, source disconnection, queue overflow, capacity eviction, or process
+  restart that affects a window before its finalization claim makes it
+  incomplete. Its qualification assessment and every rule result are
+  `UNKNOWN`; partial evidence must not be treated as a pass or rejection.
+- Prefilter Defaults, Qualification Defaults, and requested-running stream
+  intent are PostgreSQL state. They survive browser, server, and computer
+  restarts unless the database is removed.
+- Each confirmed window pins its settings. A later settings edit applies only
+  to subsequently confirmed windows and never mutates open or finalized
+  evidence.
 - Reserved exact-recovery checkpoints and collection-gap records must not be
   reused as if they described live-first coverage. A future recovery mode must
   be explicit and independently truthful about its bounds.
@@ -73,12 +119,16 @@ deployment topology.
 - Workers and projections are idempotent and rebuildable from durable facts.
 - Retention is explicit and versioned. It cannot make missing replay evidence
   appear complete.
+- Exact raw source details may age out under retention while frozen
+  qualification snapshots and audits remain. Inspection and replay must expose
+  that limitation.
 
 ## Reproducibility
 
-- Retained raw observations are never mutated in place. Corrections are new
-  linked facts, while explicit retention may delete whole eligible terminal
-  rows.
+- Retained payload, provenance, and raw evidence are never mutated in place.
+  Compatible replay may atomically canonicalize a non-opening receipt to an
+  earlier time as defined above. Corrections are new linked facts, while
+  explicit retention may delete whole eligible terminal rows.
 - Feature, wallet-score, cluster, model, strategy, and policy versions are
   immutable once referenced by an evaluation.
 - A replay uses only information observable at the simulated point in time.
@@ -89,9 +139,15 @@ deployment topology.
 ## Boundaries
 
 - The UI consumes projections and collects intent; it does not own domain truth.
+- Execution-mode presentation and adjustable sidebar/inspector widths may
+  persist in browser `localStorage`, but they grant no backend or execution
+  authority. Unsaved settings text, order drafts, current navigation, and
+  selections remain transient.
 - The local browser communicates with the Rust server through HTTP commands,
   snapshots, and SSE. It never connects directly to PostgreSQL.
 - Source decoders expose observations; they do not contain strategy rules.
+- Discovery owns bounded-window activity qualification, but not deterministic
+  scam/rug risk approval, strategy evaluation, or execution.
 - RPC readers remain provider-neutral and read-only.
 - Uploaded strategies are declarative data, never arbitrary executable code.
 - The initial Rust backend is one modular monolith. Crate boundaries remain

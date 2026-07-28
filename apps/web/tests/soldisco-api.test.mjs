@@ -54,6 +54,7 @@ function discoveryFixture() {
           base_volume_units: "9007199254740993",
           quote_volume_units: "2500",
         },
+        qualification: null,
         risk_score: null,
         opportunity_score: null,
       },
@@ -65,9 +66,43 @@ function discoveryFixture() {
       pending: 0,
       approved: 0,
       rejected: 0,
+      qualified: 0,
+      qualification_pending: 1,
+      qualification_rejected: 0,
+      qualification_unknown: 0,
+      processing_failures: 0,
       flow_per_minute: null,
     },
     rejection_reasons: [],
+  };
+}
+
+function qualificationSummaryFixture() {
+  return {
+    window_revision: 1,
+    ruleset_revision: 4,
+    opened_unix_ms: 1_700_000_000_000,
+    closed_unix_ms: 1_700_000_060_000,
+    evaluated_unix_ms: 1_700_000_060_100,
+    decision: "PASS",
+    completeness: "COMPLETE",
+    reason_codes: [],
+    trades: 8,
+    buys: 5,
+    sells: 3,
+    unique_traders: 6,
+    unique_buyers: 4,
+    unique_sellers: 3,
+    buy_base_volume_units: "3000",
+    sell_base_volume_units: "1000",
+    buy_quote_volume_units: "500000000",
+    sell_quote_volume_units: "200000000",
+    maximum_single_wallet_quote_share_bps: 4200,
+    price_change_bps: -125,
+    first_base_reserve_units: "1000000",
+    first_quote_reserve_units: "500000",
+    latest_base_reserve_units: "999000",
+    latest_quote_reserve_units: "501000",
   };
 }
 
@@ -96,6 +131,40 @@ function prefilterDefaultsFixture() {
   };
 }
 
+function qualificationDefaultsFixture() {
+  return {
+    revision: 4,
+    values: {
+      minimum_trades: 8,
+      minimum_unique_traders: 4,
+      minimum_buys: 3,
+      minimum_sells: 1,
+      minimum_native_quote_volume_units: 500_000_000,
+      minimum_stable_quote_volume_units: 50_000_000,
+      maximum_single_wallet_quote_share_bps: 6500,
+    },
+    bounds: {
+      minimum_trades: { minimum: 1, maximum: 10_000 },
+      minimum_unique_traders: { minimum: 1, maximum: 10_000 },
+      minimum_buys: { minimum: 0, maximum: 10_000 },
+      minimum_sells: { minimum: 0, maximum: 10_000 },
+      minimum_native_quote_volume_units: {
+        minimum: 0,
+        maximum: 9_000_000_000_000,
+      },
+      minimum_stable_quote_volume_units: {
+        minimum: 0,
+        maximum: 9_000_000_000_000,
+      },
+      maximum_single_wallet_quote_share_bps: {
+        minimum: 1_000,
+        maximum: 10_000,
+      },
+    },
+    apply_requirement: "NEW_WINDOWS",
+  };
+}
+
 test("parses and maps the exact observe-all browser contract", async () => {
   const [{ parseDiscoverySnapshot }, { mapDiscoverySnapshot }] =
     await Promise.all([
@@ -121,6 +190,59 @@ test("parses and maps the exact observe-all browser contract", async () => {
   assert.throws(
     () => parseDiscoverySnapshot(invalid),
     /\$\.tokens\[0\]\.risk_score/,
+  );
+
+  const qualified = discoveryFixture();
+  qualified.mode = "QUALIFIED_ONLY";
+  qualified.tokens[0].stage = "QUALIFIED";
+  qualified.tokens[0].qualification = qualificationSummaryFixture();
+  qualified.counters.qualified = 1;
+  qualified.counters.qualification_pending = 0;
+  const qualifiedMapped = mapDiscoverySnapshot(
+    parseDiscoverySnapshot(qualified),
+  );
+  assert.equal(qualifiedMapped.mode, "QUALIFIED_ONLY");
+  assert.equal(qualifiedMapped.tokens[0].stageLabel, "Qualified");
+  assert.equal(
+    qualifiedMapped.tokens[0].qualification.ruleset_revision,
+    4,
+  );
+  assert.equal(
+    qualifiedMapped.tokens[0].qualification.price_change_bps,
+    -125,
+  );
+
+  const impossibleShare = discoveryFixture();
+  impossibleShare.tokens[0].qualification = qualificationSummaryFixture();
+  impossibleShare.tokens[0].qualification.maximum_single_wallet_quote_share_bps =
+    10_001;
+  assert.throws(
+    () => parseDiscoverySnapshot(impossibleShare),
+    /maximum_single_wallet_quote_share_bps/,
+  );
+
+  const missingQualification = discoveryFixture();
+  missingQualification.tokens[0].stage = "QUALIFIED";
+  assert.throws(
+    () => parseDiscoverySnapshot(missingQualification),
+    /\$\.tokens\[0\]\.qualification/,
+  );
+
+  const rejectedQualification = discoveryFixture();
+  rejectedQualification.tokens[0].stage = "QUALIFIED";
+  rejectedQualification.tokens[0].qualification =
+    qualificationSummaryFixture();
+  rejectedQualification.tokens[0].qualification.decision = "REJECT";
+  assert.throws(
+    () => parseDiscoverySnapshot(rejectedQualification),
+    /complete PASS evidence/,
+  );
+
+  const unqualifiedApproval = discoveryFixture();
+  unqualifiedApproval.tokens[0].stage = "APPROVED";
+  assert.throws(
+    () => parseDiscoverySnapshot(unqualifiedApproval),
+    /complete PASS evidence/,
   );
 });
 
@@ -211,6 +333,43 @@ test("strictly parses bounded prefilter defaults", async () => {
   assert.throws(
     () => parsePrefilterDefaults(impossibleWindow),
     /\$\.values\.observation_window_ms/,
+  );
+});
+
+test("strictly parses bounded qualification defaults", async () => {
+  const { parseQualificationDefaults } =
+    await loadApiModule("parsers.ts");
+  const parsed = parseQualificationDefaults(
+    qualificationDefaultsFixture(),
+  );
+
+  assert.equal(parsed.revision, 4);
+  assert.equal(parsed.values.minimum_trades, 8);
+  assert.equal(
+    parsed.values.maximum_single_wallet_quote_share_bps,
+    6500,
+  );
+  assert.equal(parsed.apply_requirement, "NEW_WINDOWS");
+
+  const relationshipViolation = qualificationDefaultsFixture();
+  relationshipViolation.values.minimum_unique_traders = 9;
+  assert.throws(
+    () => parseQualificationDefaults(relationshipViolation),
+    /\$\.values\.minimum_unique_traders/,
+  );
+
+  const unsupportedApply = qualificationDefaultsFixture();
+  unsupportedApply.apply_requirement = "STREAM_RESTART";
+  assert.throws(
+    () => parseQualificationDefaults(unsupportedApply),
+    /\$\.apply_requirement/,
+  );
+
+  const outOfBounds = qualificationDefaultsFixture();
+  outOfBounds.values.maximum_single_wallet_quote_share_bps = 10_001;
+  assert.throws(
+    () => parseQualificationDefaults(outOfBounds),
+    /\$\.values\.maximum_single_wallet_quote_share_bps/,
   );
 });
 
@@ -355,6 +514,52 @@ test("reads and updates prefilter defaults through the guarded contract", async 
   ]);
 });
 
+test("reads and updates qualification defaults through the guarded contract", async () => {
+  const { SoldiscoApiClient } = await loadApiModule("client.ts");
+  const requests = [];
+  const client = new SoldiscoApiClient(
+    "http://127.0.0.1:8080/api/v1",
+    async (url, init) => {
+      requests.push({
+        url,
+        method: init.method,
+        headers: init.headers,
+        body: init.body,
+      });
+      return Response.json(qualificationDefaultsFixture());
+    },
+  );
+
+  const current = await client.qualificationDefaults;
+  const request = {
+    expected_revision: current.revision,
+    values: {
+      ...current.values,
+      minimum_trades: 10,
+    },
+  };
+  await client.updateQualificationDefaults(request);
+
+  assert.deepEqual(requests, [
+    {
+      url: "http://127.0.0.1:8080/api/v1/settings/qualification-defaults",
+      method: "GET",
+      headers: { Accept: "application/json" },
+      body: undefined,
+    },
+    {
+      url: "http://127.0.0.1:8080/api/v1/settings/qualification-defaults",
+      method: "PUT",
+      headers: {
+        Accept: "application/json",
+        "X-Soldisco-Control": "soldisco-local-ui-v1",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(request),
+    },
+  ]);
+});
+
 test("validates human-readable prefilter drafts without losing milliseconds", async () => {
   const {
     prefilterDraftHasChanges,
@@ -427,6 +632,79 @@ test("validates human-readable prefilter drafts without losing milliseconds", as
   assert.match(
     unsafeValidation.errors.rpc_request_timeout_ms,
     /cannot exceed the maximum creation age/,
+  );
+});
+
+test("validates qualification relationships and basis-point display values", async () => {
+  const {
+    qualificationDraftHasChanges,
+    toQualificationDefaultsDraft,
+    validateQualificationDefaultsDraft,
+  } = await loadDashboardModule("controls/qualificationDefaultsDraft.ts");
+  const settings = qualificationDefaultsFixture();
+  const baseline = toQualificationDefaultsDraft(settings.values);
+
+  assert.equal(baseline.minimum_trades, "8");
+  assert.equal(baseline.maximum_single_wallet_quote_share_bps, "65");
+
+  const equivalent = {
+    ...baseline,
+    maximum_single_wallet_quote_share_bps: "65.00",
+  };
+  const equivalentValidation = validateQualificationDefaultsDraft(
+    equivalent,
+    settings.bounds,
+  );
+  assert.equal(equivalentValidation.valid, true);
+  assert.equal(
+    qualificationDraftHasChanges(
+      equivalent,
+      settings.values,
+      equivalentValidation,
+    ),
+    false,
+  );
+
+  const changed = {
+    ...baseline,
+    maximum_single_wallet_quote_share_bps: "62.25",
+  };
+  const changedValidation = validateQualificationDefaultsDraft(
+    changed,
+    settings.bounds,
+  );
+  assert.equal(changedValidation.valid, true);
+  assert.equal(
+    changedValidation.values.maximum_single_wallet_quote_share_bps,
+    6225,
+  );
+
+  const impossibleCounts = {
+    ...baseline,
+    minimum_sells: "9",
+  };
+  const impossibleValidation = validateQualificationDefaultsDraft(
+    impossibleCounts,
+    settings.bounds,
+  );
+  assert.equal(impossibleValidation.valid, false);
+  assert.match(
+    impossibleValidation.errors.minimum_sells,
+    /Cannot exceed the minimum trades/,
+  );
+
+  const tooPrecise = {
+    ...baseline,
+    maximum_single_wallet_quote_share_bps: "62.251",
+  };
+  const preciseValidation = validateQualificationDefaultsDraft(
+    tooPrecise,
+    settings.bounds,
+  );
+  assert.equal(preciseValidation.valid, false);
+  assert.match(
+    preciseValidation.errors.maximum_single_wallet_quote_share_bps,
+    /two decimal places/,
   );
 });
 
@@ -561,6 +839,8 @@ test("describes degraded and transitional empty stream states honestly", async (
       backendConnected: true,
       streamStatus: "STARTING",
       requestedRunning: true,
+      mode: "QUALIFIED_ONLY",
+      dataStale: false,
     }),
     {
       title: "Collector is starting",
@@ -573,6 +853,8 @@ test("describes degraded and transitional empty stream states honestly", async (
       backendConnected: true,
       streamStatus: "DEGRADED",
       requestedRunning: true,
+      mode: "QUALIFIED_ONLY",
+      dataStale: false,
     }).detail,
     /still requested/,
   );
@@ -581,8 +863,214 @@ test("describes degraded and transitional empty stream states honestly", async (
       backendConnected: true,
       streamStatus: "ERROR",
       requestedRunning: false,
+      mode: "QUALIFIED_ONLY",
+      dataStale: false,
     }).title,
     /error/i,
+  );
+
+  assert.match(
+    describeEmptyStream({
+      backendConnected: true,
+      streamStatus: "RUNNING",
+      requestedRunning: true,
+      mode: "QUALIFIED_ONLY",
+      dataStale: false,
+    }).title,
+    /qualified discoveries/i,
+  );
+  assert.match(
+    describeEmptyStream({
+      backendConnected: true,
+      streamStatus: "RUNNING",
+      requestedRunning: true,
+      mode: "QUALIFIED_ONLY",
+      dataStale: true,
+    }).title,
+    /stale/i,
+  );
+});
+
+test("presents qualification outcome counters without legacy ambiguity", async () => {
+  const { buildDiscoveryCounters } =
+    await loadDashboardModule("DiscoveryCounters.tsx");
+  const counters = buildDiscoveryCounters({
+    mode: "QUALIFIED_ONLY",
+    observed: 20,
+    pending: 99,
+    approved: 0,
+    rejected: 98,
+    qualified: 3,
+    qualificationPending: 4,
+    qualificationRejected: 5,
+    qualificationUnknown: 6,
+    processingFailures: 7,
+    ratePerMinute: 8,
+  });
+
+  assert.deepEqual(
+    counters.map(({ label, value }) => [label, value]),
+    [
+      ["Current qualified", "3"],
+      ["Open windows", "4"],
+      ["Activity rejects", "5"],
+      ["Unknown windows", "6"],
+      ["Processing failures", "7"],
+      ["Events/min", "8 / min"],
+    ],
+  );
+});
+
+test("labels terminal observed qualification outcomes instead of pending", async () => {
+  const { describeQualificationState } = await loadDashboardModule(
+    "inspector/OverviewTab.tsx",
+  );
+
+  assert.equal(
+    describeQualificationState({
+      stage: "OBSERVED",
+      qualification: {
+        ...qualificationSummaryFixture(),
+        decision: "REJECT",
+      },
+    }).label,
+    "Qualification rejected",
+  );
+  assert.equal(
+    describeQualificationState({
+      stage: "OBSERVED",
+      qualification: {
+        ...qualificationSummaryFixture(),
+        decision: "UNKNOWN",
+        completeness: "INCOMPLETE",
+      },
+    }).label,
+    "Qualification unknown",
+  );
+  assert.equal(
+    describeQualificationState({
+      stage: "OBSERVED",
+      qualification: null,
+    }).label,
+    "Qualification pending",
+  );
+});
+
+test("flushes the latest dashboard layout and tolerates storage failures", async () => {
+  const {
+    defaultLayout,
+    flushDashboardLayoutPreference,
+    layoutStorageKey,
+    readDashboardLayoutPreference,
+    writeDashboardLayoutPreference,
+  } = await loadDashboardModule("useDashboardLayout.ts");
+  const stored = new Map();
+  const storage = {
+    getItem(key) {
+      return stored.get(key) ?? null;
+    },
+    removeItem(key) {
+      stored.delete(key);
+    },
+    setItem(key, value) {
+      stored.set(key, value);
+    },
+  };
+
+  assert.deepEqual(readDashboardLayoutPreference(storage), defaultLayout);
+
+  const latestLayout = { sidebar: 286, inspector: 472 };
+  flushDashboardLayoutPreference(storage, latestLayout);
+  assert.equal(
+    stored.get(layoutStorageKey),
+    JSON.stringify(latestLayout),
+  );
+  assert.deepEqual(
+    readDashboardLayoutPreference(storage),
+    latestLayout,
+  );
+
+  stored.set(
+    layoutStorageKey,
+    JSON.stringify({ sidebar: -1, inspector: 50_000 }),
+  );
+  assert.deepEqual(readDashboardLayoutPreference(storage), {
+    sidebar: 180,
+    inspector: 560,
+  });
+
+  const blockedStorage = {
+    getItem() {
+      throw new Error("storage blocked");
+    },
+    removeItem() {
+      throw new Error("storage blocked");
+    },
+    setItem() {
+      throw new Error("storage blocked");
+    },
+  };
+  assert.doesNotThrow(() =>
+    writeDashboardLayoutPreference(blockedStorage, latestLayout),
+  );
+  assert.doesNotThrow(() =>
+    flushDashboardLayoutPreference(blockedStorage, latestLayout),
+  );
+  assert.deepEqual(
+    readDashboardLayoutPreference(blockedStorage),
+    defaultLayout,
+  );
+});
+
+test("validates and stores only the execution-mode presentation preference", async () => {
+  const {
+    executionModePreferenceStorageKey,
+    parseExecutionModePreference,
+    readExecutionModePreference,
+    writeExecutionModePreference,
+  } = await loadDashboardModule("useExecutionModePreference.ts");
+
+  assert.equal(
+    executionModePreferenceStorageKey,
+    "soldisco.execution-mode-presentation.v1",
+  );
+  assert.equal(parseExecutionModePreference(null), "Paper");
+  assert.equal(parseExecutionModePreference("corrupt"), "Paper");
+  assert.equal(parseExecutionModePreference('"Live"'), "Paper");
+  assert.equal(parseExecutionModePreference("Paper"), "Paper");
+  assert.equal(parseExecutionModePreference("Live"), "Live");
+  assert.equal(
+    readExecutionModePreference({
+      getItem() {
+        throw new Error("storage blocked");
+      },
+    }),
+    "Paper",
+  );
+
+  const writes = [];
+  assert.doesNotThrow(() =>
+    writeExecutionModePreference(
+      {
+        setItem(key, value) {
+          writes.push([key, value]);
+        },
+      },
+      "Live",
+    ),
+  );
+  assert.deepEqual(writes, [
+    ["soldisco.execution-mode-presentation.v1", "Live"],
+  ]);
+  assert.doesNotThrow(() =>
+    writeExecutionModePreference(
+      {
+        setItem() {
+          throw new Error("storage blocked");
+        },
+      },
+      "Paper",
+    ),
   );
 });
 

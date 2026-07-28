@@ -1,4 +1,7 @@
-use soldisco_api_contracts::PrefilterDefaultsValidationError;
+use soldisco_api_contracts::{
+    PrefilterDefaultsValidationError, QualificationDefaultsValidationError,
+};
+use soldisco_discovery_engine::{QualificationPolicyError, SnapshotError};
 use soldisco_domain::Network;
 use thiserror::Error;
 
@@ -12,6 +15,16 @@ pub enum PersistenceError {
     Serialization(#[from] serde_json::Error),
     #[error("observation key network does not match market network")]
     NetworkMismatch,
+    #[error(
+        "chain observation {network}/{source_program}/{signature}:{instruction_index}:{event_index} conflicts with previously stored immutable evidence"
+    )]
+    ObservationEvidenceConflict {
+        network: String,
+        source_program: String,
+        signature: String,
+        instruction_index: u16,
+        event_index: u16,
+    },
     #[error("database is bound to {bound:?}; refusing startup for requested network {requested:?}")]
     DatabaseNetworkMismatch { bound: Network, requested: Network },
     #[error("{field} cannot be represented by PostgreSQL BIGINT")]
@@ -26,6 +39,14 @@ pub enum PersistenceError {
     InvalidPrefilterDefaults(#[from] PrefilterDefaultsValidationError),
     #[error("prefilter defaults revision conflict: expected {expected}, actual {actual:?}")]
     PrefilterDefaultsRevisionConflict { expected: u64, actual: Option<u64> },
+    #[error("invalid qualification defaults: {0}")]
+    InvalidQualificationDefaults(#[from] QualificationDefaultsValidationError),
+    #[error("invalid discovery-window snapshot: {0}")]
+    InvalidDiscoveryWindowSnapshot(#[from] SnapshotError),
+    #[error("invalid discovery-window qualification policy: {0}")]
+    InvalidQualificationPolicy(#[from] QualificationPolicyError),
+    #[error("qualification defaults revision conflict: expected {expected}, actual {actual:?}")]
+    QualificationDefaultsRevisionConflict { expected: u64, actual: Option<u64> },
     #[error("{field} is not valid standard base64")]
     InvalidBase64 { field: &'static str },
     #[error("{field} is longer than the supported maximum of {maximum} bytes")]
@@ -50,6 +71,8 @@ pub enum PersistenceError {
     ApprovalMustBeExplicit,
     #[error("token {mint} must be observed before it can be approved")]
     CandidateNotObserved { mint: String },
+    #[error("token {mint} must have a complete qualification PASS before approval")]
+    CandidateNotQualified { mint: String },
     #[error("discovery activity totals are internally inconsistent")]
     InvalidActivityTotals,
     #[error("{field} must contain only unsigned decimal digits")]
@@ -60,6 +83,24 @@ pub enum PersistenceError {
     EmptyPassingRules,
     #[error("work item {work_id} already has a different immutable screening run")]
     ScreeningRunConflict { work_id: i64 },
+    #[error("discovery window close time must be later than its open time")]
+    InvalidDiscoveryWindowBounds,
+    #[error("durable discovery window {window_id} does not match its opening evidence")]
+    DiscoveryWindowIdentityConflict { window_id: i64 },
+    #[error("observation does not belong to durable discovery window {window_id}: {field}")]
+    DiscoveryWindowObservationMismatch { window_id: i64, field: &'static str },
+    #[error("durable discovery window {window_id} is no longer active")]
+    DiscoveryWindowNotActive { window_id: i64 },
+    #[error("durable discovery window {window_id} already has different final evidence")]
+    DiscoveryWindowFinalizationConflict { window_id: i64 },
+    #[error(
+        "durable discovery window {window_id} final evidence does not match its observations and pinned rules"
+    )]
+    DiscoveryWindowFinalizationEvidenceMismatch { window_id: i64 },
+    #[error("durable discovery window {window_id} gained evidence while it was being finalized")]
+    DiscoveryWindowEvidenceChanged { window_id: i64 },
+    #[error("durable discovery window {window_id} has no matching projected candidate")]
+    DiscoveryWindowProjectionMissing { window_id: i64 },
     #[error("PumpSwap base and quote mints must be different")]
     IdenticalPoolMints,
     #[error("PumpSwap pool {pool_address} already maps to a different base or quote mint")]

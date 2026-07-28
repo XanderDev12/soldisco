@@ -12,6 +12,8 @@ pub mod normalization;
 pub mod pending_activity;
 pub mod pipeline;
 pub mod projection;
+pub mod pump_swap_pair;
+pub mod qualification;
 pub mod raydium;
 pub mod recovery;
 pub mod screening;

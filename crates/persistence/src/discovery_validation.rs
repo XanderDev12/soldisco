@@ -1,4 +1,6 @@
-use soldisco_api_contracts::{DiscoveryStage, DiscoveryToken};
+use soldisco_api_contracts::{
+    DiscoveryStage, DiscoveryToken, QualificationDecision, WindowCompleteness,
+};
 use soldisco_domain::{NormalizedObservation, ObservationPayload, SourceProgram, Venue};
 
 use crate::{
@@ -65,6 +67,40 @@ pub(crate) fn validate_token_shape(token: &DiscoveryToken) -> Result<(), Persist
         || !source_matches_venue(token.source_program, token.primary_venue)
     {
         return Err(PersistenceError::InvalidActivityTotals);
+    }
+    if let Some(qualification) = &token.qualification {
+        for value in [
+            &qualification.buy_base_volume_units,
+            &qualification.sell_base_volume_units,
+            &qualification.buy_quote_volume_units,
+            &qualification.sell_quote_volume_units,
+        ] {
+            validate_unsigned_decimal(value, "qualification volume")?;
+        }
+        if qualification.buys.checked_add(qualification.sells) != Some(qualification.trades)
+            || qualification.unique_traders > qualification.trades
+            || qualification.unique_buyers > qualification.buys
+            || qualification.unique_sellers > qualification.sells
+            || qualification.closed_unix_ms <= qualification.opened_unix_ms
+            || qualification.evaluated_unix_ms < qualification.opened_unix_ms
+            || qualification
+                .maximum_single_wallet_quote_share_bps
+                .is_some_and(|share| share > 10_000)
+        {
+            return Err(PersistenceError::InvalidActivityTotals);
+        }
+    }
+    if matches!(
+        token.stage,
+        DiscoveryStage::Qualified | DiscoveryStage::Approved
+    ) && token.qualification.as_ref().is_none_or(|qualification| {
+        qualification.decision != QualificationDecision::Pass
+            || qualification.completeness != WindowCompleteness::Complete
+    }) {
+        return Err(PersistenceError::InvalidStoredValue {
+            field: "token qualification",
+            value: discovery_stage_name(token.stage).to_owned(),
+        });
     }
     Ok(())
 }
@@ -182,8 +218,10 @@ pub(crate) fn merge_observation(
     existing: DiscoveryToken,
     mut observed: DiscoveryToken,
 ) -> DiscoveryToken {
-    let preserve_approval =
-        existing.stage == DiscoveryStage::Approved && same_market(&existing, &observed);
+    let preserve_decision = matches!(
+        existing.stage,
+        DiscoveryStage::Qualified | DiscoveryStage::Approved
+    ) && same_market(&existing, &observed);
     observed.first_observed_unix_ms = observed
         .first_observed_unix_ms
         .min(existing.first_observed_unix_ms);
@@ -192,8 +230,9 @@ pub(crate) fn merge_observation(
         .max(existing.last_observed_unix_ms);
     observed.name = observed.name.or(existing.name);
     observed.symbol = observed.symbol.or(existing.symbol);
-    if preserve_approval {
-        observed.stage = DiscoveryStage::Approved;
+    if preserve_decision {
+        observed.stage = existing.stage;
+        observed.qualification = existing.qualification;
         observed.risk_score = observed.risk_score.or(existing.risk_score);
         observed.opportunity_score = observed.opportunity_score.or(existing.opportunity_score);
     }
@@ -231,15 +270,18 @@ pub(crate) fn merge_approval(
     if existing.observed_slot > approved.observed_slot {
         let risk_score = approved.risk_score;
         let opportunity_score = approved.opportunity_score;
+        let qualification = approved.qualification;
         approved = existing;
         approved.risk_score = risk_score;
         approved.opportunity_score = opportunity_score;
+        approved.qualification = qualification.or(approved.qualification);
     } else {
         approved.first_observed_unix_ms = approved
             .first_observed_unix_ms
             .min(existing.first_observed_unix_ms);
         approved.name = approved.name.or(existing.name);
         approved.symbol = approved.symbol.or(existing.symbol);
+        approved.qualification = approved.qualification.or(existing.qualification);
     }
     approved.stage = DiscoveryStage::Approved;
     approved
@@ -319,6 +361,7 @@ mod tests {
             received_time_unix_ms: 101,
             raw_evidence_hash: "hash".to_owned(),
             source_evidence_base64: "ZXZpZGVuY2U=".to_owned(),
+            source_details: serde_json::json!({"event_type": "CREATE"}),
             payload: ObservationPayload::TokenCreated {
                 name: "Token".to_owned(),
                 symbol: "TOK".to_owned(),
@@ -352,6 +395,7 @@ mod tests {
                 base_volume_units: "0".to_owned(),
                 quote_volume_units: "0".to_owned(),
             },
+            qualification: None,
             risk_score: None,
             opportunity_score: None,
         }

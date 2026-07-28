@@ -8,11 +8,12 @@ TypeScript, and Tailwind's CSS toolchain.
 
 - Connects to the local Rust server through versioned HTTP commands and
   snapshots plus named `soldisco` SSE invalidations.
-- Shows the current `OBSERVE_ALL` stream of structurally valid Pump/PumpSwap
-  discoveries and their directly tracked venue activity. This is not yet an
-  approved-only feed.
-- Shows truthful observed, pending, approved, rejected, and flow-rate counters;
-  deterministic rejection data remains empty until that engine exists.
+- Shows the default `QUALIFIED_ONLY` stream of real Pump/PumpSwap candidates
+  whose complete bounded activity window passed its pinned qualification rules.
+  Diagnostic `OBSERVE_ALL` remains available through the API.
+- Shows separately scoped current-candidate, active-window, cumulative
+  activity-qualification-result, processing-failure, and event-throughput
+  counters plus qualification rejection summaries.
 - Provides accessible views for discovery, positions, orders, alerts,
   strategies, replays, and local controls.
 - Includes locally guarded start/stop controls derived from the supervised
@@ -21,10 +22,16 @@ TypeScript, and Tailwind's CSS toolchain.
   strategy match.
 - Includes an inspector with overview, risk, signal, trade, and position views.
 - Provides adjustable navigation and inspector regions with device-local layout
-  persistence.
+  persistence in browser `localStorage`.
+- Provides Prefilter and Qualification Defaults controls whose saved values and
+  revisions are owned by PostgreSQL. Unsaved form text is transient.
 - Keeps Paper and Live trading views distinct: Paper records simulated entry
   and exit prices without wallet controls, while Live alone exposes
-  wallet-dependent actions. Neither mode enables execution yet.
+  wallet-dependent actions. The selected presentation persists in
+  `localStorage`, but grants no wallet, signing, or execution authority.
+- Keeps order drafts, active navigation, token selection, inspector tabs, and
+  modal state transient rather than presenting unfinished UI state as durable
+  trading data.
 - Never calls Solana or PostgreSQL directly. Raydium enrichment, deterministic
   screening, wallet connectivity, quotes, signing, and transaction submission
   are not connected yet.
@@ -75,7 +82,8 @@ modules rather than folded into the orchestration shell.
 
 ## Next milestone
 
-Add rolling qualification and the first versioned deterministic safety gate to
-the connected Pump/PumpSwap discovery slice. Raydium can then provide optional
-post-Pump venue enrichment for mints with relevant pools. Wallet connectivity,
-quotes, signing, and transaction submission remain separate later milestones.
+Add the first versioned deterministic scam/rug safety gate and optional
+post-Pump Raydium venue enrichment. `QUALIFIED` currently means activity quality
+only; it is not safety clearance, a recommendation, or authorization to trade.
+Wallet connectivity, quotes, signing, and transaction submission remain
+separate later milestones.

@@ -35,6 +35,10 @@ export function ExecutionModeCard({
           </button>
         ))}
       </div>
+      <p className="execution-mode-note">
+        Remembered locally as a presentation preference only. Live mode does
+        not authorize wallet access, signing, or trade execution.
+      </p>
     </article>
   );
 }

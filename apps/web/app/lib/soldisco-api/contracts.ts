@@ -6,8 +6,11 @@ export type StreamStatus =
   | "ERROR"
   | "STOPPING";
 
-export type DiscoveryMode = "OBSERVE_ALL" | "APPROVED_ONLY";
-export type DiscoveryStage = "OBSERVED" | "APPROVED";
+export type DiscoveryMode =
+  | "OBSERVE_ALL"
+  | "QUALIFIED_ONLY"
+  | "APPROVED_ONLY";
+export type DiscoveryStage = "OBSERVED" | "QUALIFIED" | "APPROVED";
 
 export type Venue =
   | "PUMP_BONDING_CURVE"
@@ -32,6 +35,36 @@ export type DiscoveryActivity = {
   quote_volume_units: string;
 };
 
+export type QualificationDecision = "PASS" | "REJECT" | "UNKNOWN";
+export type ObservationCompleteness = "COMPLETE" | "INCOMPLETE";
+
+export type DiscoveryWindowSummary = {
+  window_revision: number;
+  ruleset_revision: number;
+  opened_unix_ms: number;
+  closed_unix_ms: number;
+  evaluated_unix_ms: number;
+  decision: QualificationDecision;
+  completeness: ObservationCompleteness;
+  reason_codes: string[];
+  trades: number;
+  buys: number;
+  sells: number;
+  unique_traders: number;
+  unique_buyers: number;
+  unique_sellers: number;
+  buy_base_volume_units: string;
+  sell_base_volume_units: string;
+  buy_quote_volume_units: string;
+  sell_quote_volume_units: string;
+  maximum_single_wallet_quote_share_bps: number | null;
+  price_change_bps: number | null;
+  first_base_reserve_units: string | null;
+  first_quote_reserve_units: string | null;
+  latest_base_reserve_units: string | null;
+  latest_quote_reserve_units: string | null;
+};
+
 export type DiscoveryToken = {
   mint: string;
   name: string | null;
@@ -47,6 +80,7 @@ export type DiscoveryToken = {
   last_observed_unix_ms: number;
   latest_signature: string;
   activity: DiscoveryActivity;
+  qualification: DiscoveryWindowSummary | null;
   risk_score: number | null;
   opportunity_score: number | null;
 };
@@ -56,6 +90,11 @@ export type DiscoveryCounters = {
   pending: number;
   approved: number;
   rejected: number;
+  qualified: number;
+  qualification_pending: number;
+  qualification_rejected: number;
+  qualification_unknown: number;
+  processing_failures: number;
   flow_per_minute: number | null;
 };
 
@@ -114,6 +153,32 @@ export type PrefilterDefaultsResponse = {
 export type UpdatePrefilterDefaultsRequest = {
   expected_revision: number;
   values: PrefilterDefaultsValues;
+};
+
+export type QualificationDefaultsValues = {
+  minimum_trades: number;
+  minimum_unique_traders: number;
+  minimum_buys: number;
+  minimum_sells: number;
+  minimum_native_quote_volume_units: number;
+  minimum_stable_quote_volume_units: number;
+  maximum_single_wallet_quote_share_bps: number;
+};
+
+export type QualificationDefaultsBounds = {
+  [Field in keyof QualificationDefaultsValues]: IntegerSettingBounds;
+};
+
+export type QualificationDefaultsResponse = {
+  revision: number;
+  values: QualificationDefaultsValues;
+  bounds: QualificationDefaultsBounds;
+  apply_requirement: "NEW_WINDOWS";
+};
+
+export type UpdateQualificationDefaultsRequest = {
+  expected_revision: number;
+  values: QualificationDefaultsValues;
 };
 
 export type HealthResponse = {

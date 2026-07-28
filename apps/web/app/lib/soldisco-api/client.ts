@@ -3,9 +3,11 @@ import type {
   DiscoveryToken,
   HealthResponse,
   PrefilterDefaultsResponse,
+  QualificationDefaultsResponse,
   StreamCommandResponse,
   StreamStateResponse,
   UpdatePrefilterDefaultsRequest,
+  UpdateQualificationDefaultsRequest,
 } from "./contracts";
 import { errorFromResponse, normalizeApiError } from "./errors";
 import {
@@ -13,6 +15,7 @@ import {
   parseDiscoveryToken,
   parseHealth,
   parsePrefilterDefaults,
+  parseQualificationDefaults,
   parseStreamCommand,
   parseStreamState,
 } from "./parsers";
@@ -55,6 +58,13 @@ export class SoldiscoApiClient {
     );
   }
 
+  get qualificationDefaults(): Promise<QualificationDefaultsResponse> {
+    return this.#request(
+      "/settings/qualification-defaults",
+      parseQualificationDefaults,
+    );
+  }
+
   token(mint: string): Promise<DiscoveryToken> {
     return this.#request(
       `/tokens/${encodeURIComponent(mint)}`,
@@ -84,6 +94,20 @@ export class SoldiscoApiClient {
     return this.#request(
       "/settings/prefilter-defaults",
       parsePrefilterDefaults,
+      {
+        method: "PUT",
+        localControl: true,
+        jsonBody: request,
+      },
+    );
+  }
+
+  updateQualificationDefaults(
+    request: UpdateQualificationDefaultsRequest,
+  ): Promise<QualificationDefaultsResponse> {
+    return this.#request(
+      "/settings/qualification-defaults",
+      parseQualificationDefaults,
       {
         method: "PUT",
         localControl: true,

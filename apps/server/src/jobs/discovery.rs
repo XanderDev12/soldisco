@@ -184,6 +184,7 @@ fn discovery_token(observation: &NormalizedObservation) -> DiscoveryToken {
             base_volume_units: "0".to_owned(),
             quote_volume_units: "0".to_owned(),
         },
+        qualification: None,
         risk_score: None,
         opportunity_score: None,
     }
@@ -255,6 +256,7 @@ mod tests {
             received_time_unix_ms: 2_000,
             raw_evidence_hash: "hash".to_owned(),
             source_evidence_base64: "ZXZpZGVuY2U=".to_owned(),
+            source_details: serde_json::json!({"event_type": "CREATE"}),
             payload: ObservationPayload::TokenCreated {
                 name: " Token ".to_owned(),
                 symbol: " TOK ".to_owned(),

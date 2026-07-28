@@ -76,7 +76,11 @@ export function TokenStreamView({
       className="dashboard-view dashboard-view--stream"
       aria-labelledby="view-title"
     >
-      <TokenStreamHeader stream={backend.stream} />
+      <TokenStreamHeader
+        stream={backend.stream}
+        discoveryMode={screeningSummary.mode}
+        dataStale={dataStale}
+      />
 
       <div className="stream-layout">
         <TokenTable

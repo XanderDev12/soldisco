@@ -30,15 +30,22 @@ const dashboardSourceFiles = [
   "useDashboardLayout.ts",
   "useCompactNavigation.ts",
   "useDiscoveryBackend.ts",
+  "useExecutionModePreference.ts",
   "controls/ExecutionModeCard.tsx",
   "controls/NumberSettingField.tsx",
   "controls/PrefilterDefaultsForm.tsx",
   "controls/PrefilterDefaultsSection.tsx",
+  "controls/QualificationDefaultsForm.tsx",
+  "controls/QualificationDefaultsSection.tsx",
+  "controls/QualificationNumberSettingField.tsx",
   "controls/StreamControlCard.tsx",
   "controls/prefilterDefaultsDraft.ts",
+  "controls/qualificationDefaultsDraft.ts",
   "controls/usePrefilterDefaults.ts",
+  "controls/useQualificationDefaults.ts",
   "inspector/OverviewTab.tsx",
   "inspector/PositionTab.tsx",
+  "inspector/QualificationWindowEvidence.tsx",
   "inspector/RiskTab.tsx",
   "inspector/SignalsTab.tsx",
   "views/AlertsView.tsx",
@@ -94,11 +101,13 @@ test("server-renders the Soldisco discovery console", async () => {
   assert.match(html, /Discovery/);
   assert.match(html, /BACKEND UNAVAILABLE/);
   assert.match(html, /Discovery remains empty until the local backend is reachable/);
-  assert.match(html, /Queued facts/);
-  assert.match(html, /Observed/);
-  assert.match(html, /Rejected/);
-  assert.match(html, /Processed rate/);
-  assert.match(html, /Rejection log/);
+  assert.match(html, /Open windows/);
+  assert.match(html, /Current observed/);
+  assert.match(html, /Activity rejects/);
+  assert.match(html, /Unknown windows/);
+  assert.match(html, /Processing failures/);
+  assert.match(html, />Events\/min</);
+  assert.match(html, /Activity rejection log/);
   assert.match(html, /No strategy active/);
   assert.match(html, /Resize navigation/);
   assert.match(html, /Resize token inspector/);
@@ -179,6 +188,27 @@ test("keeps empty trackers and execution boundaries explicit", async () => {
     /Review \$\{side\} · Live mode/,
   );
   assert.match(sources["useDashboardLayout.ts"], /soldisco\.layout\.v1/);
+  assert.match(
+    sources["useExecutionModePreference.ts"],
+    /soldisco\.execution-mode-presentation\.v1/,
+  );
+  assert.match(
+    sources["useExecutionModePreference.ts"],
+    /future live-trading authorization/,
+  );
+  assert.match(dashboard, /useExecutionModePreference\(\)/);
+  assert.doesNotMatch(
+    dashboard,
+    /useState<ExecutionMode>\("Paper"\)/,
+  );
+  assert.match(
+    sources["controls/ExecutionModeCard.tsx"],
+    /presentation preference only/,
+  );
+  assert.match(
+    sources["controls/ExecutionModeCard.tsx"],
+    /does[\s\S]*not authorize wallet access, signing, or trade execution/,
+  );
   assert.match(allDashboardSource, /role="separator"/);
   assert.match(sources["inspector/RiskTab.tsx"], /Not evaluated/);
   assert.match(dashboard, /setActiveView\(view\)/);
@@ -197,11 +227,28 @@ test("keeps empty trackers and execution boundaries explicit", async () => {
   assert.match(dashboard, /\[mode\]: \{ \.\.\.current\[mode\], amount \}/);
   assert.doesNotMatch(allDashboardSource, /item\.active/);
   assert.match(allDashboardSource, /disabled/);
-  assert.match(sources["DiscoveryCounters.tsx"], /summary\.pending/);
+  assert.match(
+    sources["DiscoveryCounters.tsx"],
+    /summary\.qualificationPending/,
+  );
   assert.match(sources["DiscoveryCounters.tsx"], /summary\.approved/);
   assert.match(sources["DiscoveryCounters.tsx"], /summary\.observed/);
-  assert.match(sources["DiscoveryCounters.tsx"], /summary\.rejected/);
-  assert.match(sources["RejectionLog.tsx"], /Screening rejections/);
+  assert.match(
+    sources["DiscoveryCounters.tsx"],
+    /summary\.qualificationRejected/,
+  );
+  assert.match(
+    sources["DiscoveryCounters.tsx"],
+    /summary\.qualificationUnknown/,
+  );
+  assert.match(
+    sources["DiscoveryCounters.tsx"],
+    /summary\.processingFailures/,
+  );
+  assert.match(
+    sources["RejectionLog.tsx"],
+    /Activity qualification rejections/,
+  );
   assert.doesNotMatch(sources["RejectionLog.tsx"], /Collector failures/);
   assert.match(sources["RejectionLog.tsx"], /entry\.reasonCode/);
   assert.match(sources["RejectionLog.tsx"], /entry\.count/);
@@ -271,8 +318,76 @@ test("keeps empty trackers and execution boundaries explicit", async () => {
     /streamStopped/,
   );
   assert.match(
+    sources["controls/PrefilterDefaultsSection.tsx"],
+    /Revision \$\{settings\.revision\} · Stale/,
+  );
+  assert.match(
+    sources["controls/PrefilterDefaultsForm.tsx"],
+    /Reload the authoritative revision before editing or saving/,
+  );
+  assert.match(
+    sources["controls/PrefilterDefaultsForm.tsx"],
+    /settingsState === "READY"/,
+  );
+  assert.match(
     sources["controls/usePrefilterDefaults.ts"],
     /updatePrefilterDefaults/,
+  );
+  assert.match(
+    sources["controls/QualificationDefaultsSection.tsx"],
+    /Qualification Defaults/,
+  );
+  assert.match(
+    sources["controls/QualificationDefaultsSection.tsx"],
+    /Saved revisions persist across local restarts/,
+  );
+  assert.match(
+    sources["controls/QualificationDefaultsForm.tsx"],
+    /Applies to newly discovered windows/,
+  );
+  assert.match(
+    sources["controls/QualificationDefaultsForm.tsx"],
+    /Existing windows keep their pinned ruleset revision/,
+  );
+  assert.match(
+    sources["controls/useQualificationDefaults.ts"],
+    /updateQualificationDefaults/,
+  );
+  assert.match(
+    sources["controls/QualificationDefaultsSection.tsx"],
+    /Revision \$\{settings\.revision\} · Stale/,
+  );
+  assert.match(
+    sources["controls/QualificationDefaultsForm.tsx"],
+    /settingsState === "READY"/,
+  );
+  assert.match(
+    sources["inspector/OverviewTab.tsx"],
+    /QualificationWindowEvidence/,
+  );
+  assert.match(
+    sources["inspector/QualificationWindowEvidence.tsx"],
+    /Qualification evidence/,
+  );
+  assert.match(
+    sources["inspector/QualificationWindowEvidence.tsx"],
+    /maximum_single_wallet_quote_share_bps/,
+  );
+  assert.match(
+    sources["inspector/QualificationWindowEvidence.tsx"],
+    /price_change_bps/,
+  );
+  assert.match(
+    sources["inspector/QualificationWindowEvidence.tsx"],
+    /reason_codes/,
+  );
+  assert.match(
+    sources["TokenTable.tsx"],
+    /\{dataStale && \(/,
+  );
+  assert.match(
+    sources["TokenStreamHeader.tsx"],
+    /QUALIFIED_ONLY/,
   );
   assert.doesNotMatch(
     sources["views/ControlsView.tsx"],
@@ -394,6 +509,9 @@ test("keeps dashboard UI split across focused modules", async () => {
     "views/ControlsView.tsx": 80,
     "controls/PrefilterDefaultsForm.tsx": 180,
     "controls/PrefilterDefaultsSection.tsx": 260,
+    "controls/QualificationDefaultsForm.tsx": 190,
+    "controls/QualificationDefaultsSection.tsx": 180,
+    "inspector/QualificationWindowEvidence.tsx": 180,
   };
 
   assert.equal(Object.keys(sources).length, dashboardSourceFiles.length);
@@ -416,15 +534,22 @@ test("keeps dashboard UI split across focused modules", async () => {
     "controls/NumberSettingField.tsx",
     "controls/PrefilterDefaultsForm.tsx",
     "controls/PrefilterDefaultsSection.tsx",
+    "controls/QualificationDefaultsForm.tsx",
+    "controls/QualificationDefaultsSection.tsx",
+    "controls/QualificationNumberSettingField.tsx",
     "controls/StreamControlCard.tsx",
     "controls/prefilterDefaultsDraft.ts",
+    "controls/qualificationDefaultsDraft.ts",
     "controls/usePrefilterDefaults.ts",
+    "controls/useQualificationDefaults.ts",
     "inspector/OverviewTab.tsx",
+    "inspector/QualificationWindowEvidence.tsx",
     "inspector/RiskTab.tsx",
     "inspector/SignalsTab.tsx",
     "inspector/PositionTab.tsx",
     "BackendStatusNotice.tsx",
     "useDiscoveryBackend.ts",
+    "useExecutionModePreference.ts",
   ]) {
     await access(new URL(path, dashboardRoot));
   }

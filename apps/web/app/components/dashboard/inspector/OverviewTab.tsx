@@ -1,11 +1,52 @@
 import type { Token } from "../types";
 import { StatusBadge } from "../TokenBadges";
+import { QualificationWindowEvidence } from "./QualificationWindowEvidence";
 
 export interface OverviewTabProps {
   token: Token;
 }
 
+export function describeQualificationState(
+  token: Pick<Token, "stage" | "qualification">,
+): { detail: string; label: string } {
+  if (token.stage === "QUALIFIED") {
+    return {
+      detail:
+        "Passed the configured activity qualification. This is not a deterministic safety approval.",
+      label: "Latest retained activity",
+    };
+  }
+  if (token.stage === "APPROVED") {
+    return {
+      detail:
+        "Promoted after an explicit deterministic safety pass. Review the available evidence before taking action.",
+      label: "Approved stage",
+    };
+  }
+  if (token.qualification?.decision === "REJECT") {
+    return {
+      detail:
+        "The completed observation window failed one or more configured activity qualification rules.",
+      label: "Qualification rejected",
+    };
+  }
+  if (token.qualification?.decision === "UNKNOWN") {
+    return {
+      detail:
+        "The observation window was incomplete, so the activity qualification result is unknown.",
+      label: "Qualification unknown",
+    };
+  }
+  return {
+    detail:
+      "Structurally decoded on-chain activity. The observation window is still awaiting qualification.",
+    label: "Qualification pending",
+  };
+}
+
 export function OverviewTab({ token }: OverviewTabProps) {
+  const qualificationState = describeQualificationState(token);
+
   return (
     <>
       <div className="decision-card">
@@ -13,11 +54,7 @@ export function OverviewTab({ token }: OverviewTabProps) {
           <StatusBadge status={token.stageLabel} />
           <span>Collector stage</span>
         </div>
-        <p>
-          {token.stage === "OBSERVED"
-            ? "Structurally decoded on-chain activity. No opportunity threshold or deterministic safety decision has been applied."
-            : "Promoted after an explicit deterministic pass. Review the available evidence before taking action."}
-        </p>
+        <p>{qualificationState.detail}</p>
         <div className="score-row">
           <div>
             <span>Source</span>
@@ -33,6 +70,10 @@ export function OverviewTab({ token }: OverviewTabProps) {
           </div>
         </div>
       </div>
+
+      {token.qualification !== null && (
+        <QualificationWindowEvidence evidence={token.qualification} />
+      )}
 
       <section className="inspector-section">
         <div className="section-title">
@@ -76,11 +117,7 @@ export function OverviewTab({ token }: OverviewTabProps) {
       <section className="inspector-section">
         <div className="section-title">
           <h3>Observed activity</h3>
-          <span>
-            {token.stage === "OBSERVED"
-              ? "No threshold applied"
-              : "Approved stage"}
-          </span>
+          <span>{qualificationState.label}</span>
         </div>
         <div className="metric-grid">
           <div>

@@ -49,7 +49,7 @@ pub struct ProgramSourceContext {
     pub config: CollectorRuntimeConfig,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ProgramLogBatch {
     pub purpose: BatchPurpose,
     pub slot: u64,
@@ -63,6 +63,26 @@ pub struct ProgramLogBatch {
     pub log_messages: Vec<String>,
     pub transaction_error: Option<String>,
     pub window_tokens: Vec<ObservationWindowToken>,
+    pub(crate) processing_succeeded: bool,
+}
+
+impl Drop for ProgramLogBatch {
+    fn drop(&mut self) {
+        for token in &self.window_tokens {
+            if !self.processing_succeeded {
+                let _ = token.mark_incomplete(
+                    soldisco_discovery_engine::WindowIncompleteReason::ProcessingFailed,
+                );
+            }
+            let _ = token.mark_settled();
+        }
+    }
+}
+
+impl ProgramLogBatch {
+    pub(crate) fn mark_processing_succeeded(&mut self) {
+        self.processing_succeeded = true;
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -124,8 +144,48 @@ struct ProvisionalWindowGuard {
     armed: bool,
 }
 
+/// Owns receipt-time admissions until they are transferred to a
+/// `ProgramLogBatch`. Dropping an in-flight collector future must still settle
+/// every admission, otherwise a closed window can remain permanently
+/// ineligible for finalization.
+struct TrackedAdmissionGuard {
+    tokens: Vec<ObservationWindowToken>,
+}
+
+impl TrackedAdmissionGuard {
+    fn new(tokens: Vec<ObservationWindowToken>) -> Self {
+        Self { tokens }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.tokens.is_empty()
+    }
+
+    fn into_tokens(mut self) -> Vec<ObservationWindowToken> {
+        std::mem::take(&mut self.tokens)
+    }
+}
+
+impl Drop for TrackedAdmissionGuard {
+    fn drop(&mut self) {
+        for token in &self.tokens {
+            let _ = token.mark_incomplete(
+                soldisco_discovery_engine::WindowIncompleteReason::ProcessingFailed,
+            );
+            let _ = token.mark_settled();
+        }
+    }
+}
+
 impl ProvisionalWindowGuard {
     fn new(provisions: Vec<ObservationWindowProvision>) -> Self {
+        for provision in provisions.iter().filter(|provision| provision.newly_opened) {
+            if !provision.token.mark_admitted() {
+                provision.token.cancel_with_reason(
+                    soldisco_discovery_engine::WindowIncompleteReason::QueueOverflow,
+                );
+            }
+        }
         Self {
             provisions,
             armed: true,
@@ -152,6 +212,13 @@ impl Drop for ProvisionalWindowGuard {
     fn drop(&mut self) {
         if self.armed {
             cancel_new_provisions(&self.provisions);
+            for provision in self
+                .provisions
+                .iter()
+                .filter(|provision| provision.newly_opened)
+            {
+                let _ = provision.token.mark_settled();
+            }
         }
     }
 }
@@ -358,9 +425,14 @@ async fn collect_live_notification<R: SolanaReader + ?Sized>(
     discovery_rpc: &DiscoveryRpcGate,
     discovery_rpc_health: &mpsc::UnboundedSender<DiscoveryRpcHealthUpdate>,
 ) -> LiveNotificationOutcome {
+    windows.record_source_progress(
+        subscription_program.source_program(),
+        received.received_time_unix_ms,
+    );
     let disposition = classify_notification(
         &received.notification,
         windows,
+        config.network,
         config.maximum_discovery_age,
         received.received_time_unix_ms,
         unix_time_millis(),
@@ -376,16 +448,12 @@ async fn collect_live_notification<R: SolanaReader + ?Sized>(
             return LiveNotificationOutcome::Skipped;
         }
         NotificationDisposition::CollectTrackedActivity(window_tokens) => {
-            return LiveNotificationOutcome::Batches(vec![notification_batch(
-                received,
-                BatchPurpose::TrackedActivity,
-                window_tokens,
-            )]);
+            return tracked_activity_or_skip(received, TrackedAdmissionGuard::new(window_tokens));
         }
         NotificationDisposition::FetchDiscovery {
             seeds,
             tracked_windows,
-        } => (seeds, tracked_windows),
+        } => (seeds, TrackedAdmissionGuard::new(tracked_windows)),
     };
 
     if !discovery_rpc.claim_signature(&received.notification.signature) {
@@ -422,16 +490,7 @@ async fn collect_live_notification<R: SolanaReader + ?Sized>(
     else {
         return tracked_activity_or_skip(received, tracked_windows);
     };
-    let disposition = classify_notification(
-        &received.notification,
-        windows,
-        config.maximum_discovery_age,
-        received.received_time_unix_ms,
-        unix_time_millis(),
-    );
-    if !matches!(disposition, NotificationDisposition::FetchDiscovery { .. })
-        || !guard.has_new_open_token_at(received.received_time_unix_ms)
-    {
+    if !guard.has_new_open_token_at(received.received_time_unix_ms) {
         return tracked_activity_or_skip(received, tracked_windows);
     }
 
@@ -515,7 +574,7 @@ async fn collect_live_notification<R: SolanaReader + ?Sized>(
             transaction,
             received.received_time_unix_ms,
             BatchPurpose::TrackedActivity,
-            tracked_windows,
+            tracked_windows.into_tokens(),
         ));
     }
     LiveNotificationOutcome::Batches(batches)
@@ -544,7 +603,7 @@ fn discovery_admission_timeout(
 
 fn tracked_activity_or_skip(
     received: ReceivedProgramLogNotification,
-    window_tokens: Vec<ObservationWindowToken>,
+    window_tokens: TrackedAdmissionGuard,
 ) -> LiveNotificationOutcome {
     if window_tokens.is_empty() {
         LiveNotificationOutcome::Skipped
@@ -552,7 +611,7 @@ fn tracked_activity_or_skip(
         LiveNotificationOutcome::Batches(vec![notification_batch(
             received,
             BatchPurpose::TrackedActivity,
-            window_tokens,
+            window_tokens.into_tokens(),
         )])
     }
 }
@@ -579,6 +638,7 @@ fn transaction_batch(
         log_messages: transaction.log_messages,
         transaction_error: transaction.transaction_error,
         window_tokens,
+        processing_succeeded: false,
     }
 }
 
@@ -597,6 +657,7 @@ fn notification_batch(
         log_messages: received.notification.log_messages,
         transaction_error: received.notification.transaction_error,
         window_tokens,
+        processing_succeeded: false,
     }
 }
 
@@ -659,7 +720,9 @@ mod tests {
 
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use futures_util::stream;
-    use soldisco_discovery_engine::{ObservationWindowRegistry, ObservationWindowStatus};
+    use soldisco_discovery_engine::{
+        ObservationWindowRegistry, ObservationWindowStatus, WindowIncompleteReason,
+    };
     use soldisco_domain::{ChainCoordinate, Commitment, Network};
     use soldisco_solana_rpc::{
         AccountRecord, ProgramLogNotification, ReadContext, RpcError, RpcHealth, SignaturePage,
@@ -735,7 +798,11 @@ mod tests {
             };
             let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
             self.maximum_active.fetch_max(active, Ordering::SeqCst);
-            let delay = if signature == "slow" { 40 } else { 2 };
+            let delay = match signature {
+                "slow" => 40,
+                "blocked" => 5_000,
+                _ => 2,
+            };
             tokio::time::sleep(Duration::from_millis(delay)).await;
             self.active.fetch_sub(1, Ordering::SeqCst);
 
@@ -867,12 +934,18 @@ mod tests {
         received_time_unix_ms: i64,
         events: &[Vec<u8>],
     ) -> ReceivedProgramLogNotification {
-        let mut log_messages = vec![format!("Program {PUMP_PROGRAM_ID} invoke [1]")];
-        log_messages.extend(
-            events
-                .iter()
-                .map(|event| format!("Program data: {}", STANDARD.encode(event))),
-        );
+        let mut log_messages = vec![
+            format!("Program {PUMP_PROGRAM_ID} invoke [1]"),
+            "Program log: Instruction: Fixture".to_owned(),
+        ];
+        for event in events {
+            log_messages.extend([
+                format!("Program data: {}", STANDARD.encode(event)),
+                format!("Program {PUMP_PROGRAM_ID} invoke [2]"),
+                format!("Program {PUMP_PROGRAM_ID} consumed 1 of 2 compute units"),
+                format!("Program {PUMP_PROGRAM_ID} success"),
+            ]);
+        }
         log_messages.push(format!("Program {PUMP_PROGRAM_ID} success"));
         ReceivedProgramLogNotification {
             notification: ProgramLogNotification {
@@ -946,6 +1019,88 @@ mod tests {
             batches
                 .iter()
                 .all(|batch| batch.purpose == super::BatchPurpose::Discovery)
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_mixed_fetch_settles_tracked_admission_before_batch_creation() {
+        let reader = Arc::new(FakeReader::default());
+        let config = runtime_config();
+        let windows = ObservationWindowRegistry::new(8);
+        let discovery_rpc = discovery_rpc(1);
+        let cancellation = CancellationToken::new();
+        let (sender, _receiver) = mpsc::channel(1);
+        let now = super::unix_time_millis();
+        let activity = complete_event(now / 1_000, 9);
+        let decoded_activity = decode_anchor_event(
+            PUMP_PROGRAM_ID,
+            ChainCoordinate {
+                slot: 42,
+                transaction_index: None,
+                signature: "blocked".to_owned(),
+                instruction_index: 0,
+                event_index: 1,
+            },
+            &activity,
+        )
+        .expect("complete fixture");
+        let activity_target =
+            event_tracking_target(&decoded_activity.event).expect("activity target");
+        let tracked = windows.provision_target(
+            activity_target,
+            "tracked-mint".to_owned(),
+            now,
+            Duration::from_secs(5),
+        );
+        assert!(tracked.token.confirm());
+        assert!(tracked.token.set_durable_window_id(42));
+        let notifications = stream::iter([Ok(received_with_events(
+            "blocked",
+            now,
+            &[create_event_for_mint(now / 1_000, 1), activity],
+        ))]);
+
+        let processing = tokio::spawn(process_live_notifications(
+            PumpProgram::Pump,
+            notifications,
+            LiveProcessingContext {
+                http: reader.clone(),
+                batches: sender,
+                cancellation: cancellation.clone(),
+                config,
+                windows: windows.clone(),
+                discovery_rpc,
+                discovery_rpc_health: mpsc::unbounded_channel().0,
+            },
+        ));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while reader.attempts("blocked") == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("mixed discovery fetch should begin");
+        assert_eq!(tracked.token.admitted_count(), 1);
+        assert_eq!(tracked.token.settled_count(), 0);
+
+        cancellation.cancel();
+        let exit = tokio::time::timeout(Duration::from_secs(1), processing)
+            .await
+            .expect("collector cancellation should not wait for HTTP")
+            .expect("collector task")
+            .expect("collector result");
+
+        assert!(matches!(exit, LiveSourceExit::Ended));
+        assert_eq!(tracked.token.admitted_count(), 1);
+        assert_eq!(tracked.token.settled_count(), 1);
+        assert_eq!(
+            tracked.token.incomplete_reason(),
+            Some(WindowIncompleteReason::ProcessingFailed)
+        );
+        assert_eq!(
+            windows.finalization_candidates(now.saturating_add(5_000)),
+            vec![tracked.token],
+            "a cancelled in-flight fetch must not permanently block finalization"
         );
     }
 
@@ -1282,7 +1437,7 @@ mod tests {
             &create,
         )
         .expect("create fixture");
-        let seed = discovery_seed(&decoded.event).expect("discovery seed");
+        let seed = discovery_seed(&decoded.event, config.network).expect("discovery seed");
         let original =
             windows.provision_target(seed.target, seed.mint, now, Duration::from_secs(5));
 

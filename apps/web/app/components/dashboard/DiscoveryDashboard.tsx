@@ -20,6 +20,7 @@ import {
   useDashboardLayout,
 } from "./useDashboardLayout";
 import { useCompactNavigation } from "./useCompactNavigation";
+import { useExecutionModePreference } from "./useExecutionModePreference";
 import { WalletUnavailableToast } from "./WalletUnavailableToast";
 import { DashboardSectionView } from "./views/DashboardSectionView";
 
@@ -29,6 +30,11 @@ const unloadedSummary: ScreeningSummary = {
   pending: null,
   approved: null,
   rejected: null,
+  qualified: null,
+  qualificationPending: null,
+  qualificationRejected: null,
+  qualificationUnknown: null,
+  processingFailures: null,
   ratePerMinute: null,
 };
 
@@ -46,7 +52,7 @@ export function DiscoveryDashboard() {
   const [activeView, setActiveView] =
     useState<DashboardView>("discovery");
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [mode, setMode] = useState<ExecutionMode>("Paper");
+  const [mode, setModePreference] = useExecutionModePreference();
   const [inspectorTab, setInspectorTab] =
     useState<InspectorTab>("Overview");
   const [sideNavOpen, setSideNavOpen] = useState(false);
@@ -111,7 +117,7 @@ export function DiscoveryDashboard() {
   }
 
   function changeMode(nextMode: ExecutionMode) {
-    setMode(nextMode);
+    setModePreference(nextMode);
     if (nextMode === "Paper") setWalletMessage(false);
   }
 

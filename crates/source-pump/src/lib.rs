@@ -10,7 +10,8 @@ mod idl;
 mod model;
 
 pub use decoder::{
-    DecodeError, decode_anchor_event, decode_cpi_event, decode_instruction_events,
+    DecodeError, PUMP_SWAP_DEPOSIT_EVENT_DISCRIMINATOR, PUMP_SWAP_WITHDRAW_EVENT_DISCRIMINATOR,
+    decode_anchor_event, decode_cpi_event, decode_instruction_events,
     decode_instruction_program_data_logs, decode_program_data_bytes, decode_program_data_log,
     is_anchor_event_cpi,
 };
@@ -20,11 +21,12 @@ pub use idl::{
     CREATE_POOL_EVENT_DISCRIMINATOR, DECODER_SCHEMA_VERSION, DECODER_VERSION, IDL_SOURCE_REVISION,
     PUMP_AMM_IDL_SOURCE, PUMP_IDL_SOURCE, PUMP_PROGRAM_ID, PUMP_SWAP_BUY_EVENT_DISCRIMINATOR,
     PUMP_SWAP_PROGRAM_ID, PUMP_SWAP_SELL_EVENT_DISCRIMINATOR, TRADE_EVENT_DISCRIMINATOR,
+    is_pinned_event_discriminator,
 };
 pub use model::{
     DecodedPumpEvent, PumpCompleteEvent, PumpCreateEvent, PumpEvent, PumpEventKind,
     PumpMigrationEvent, PumpProgram, PumpShareholder, PumpSwapBuyEvent, PumpSwapCreatePoolEvent,
-    PumpSwapSellEvent, PumpTradeEvent, TradeDirection,
+    PumpSwapDepositEvent, PumpSwapSellEvent, PumpSwapWithdrawEvent, PumpTradeEvent, TradeDirection,
 };
 
 use soldisco_domain::SourceProgram;
@@ -58,7 +60,10 @@ pub fn supported_program(program_id: &str) -> Option<PumpProgram> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PUMP_PROGRAM_ID, PUMP_SWAP_PROGRAM_ID, PumpProgram, supported_program};
+    use super::{
+        COMPLETE_EVENT_DISCRIMINATOR, PUMP_PROGRAM_ID, PUMP_SWAP_PROGRAM_ID, PumpProgram,
+        is_pinned_event_discriminator, supported_program,
+    };
 
     #[test]
     fn supported_program_ids_are_distinct_and_recognized() {
@@ -69,5 +74,18 @@ mod tests {
             Some(PumpProgram::PumpSwap)
         );
         assert_eq!(supported_program("unknown"), None);
+    }
+
+    #[test]
+    fn pinned_event_registry_distinguishes_known_ignored_and_future_events() {
+        assert!(is_pinned_event_discriminator(
+            PumpProgram::Pump,
+            COMPLETE_EVENT_DISCRIMINATOR
+        ));
+        assert!(is_pinned_event_discriminator(
+            PumpProgram::Pump,
+            [64, 69, 192, 104, 29, 30, 25, 107]
+        ));
+        assert!(!is_pinned_event_discriminator(PumpProgram::Pump, [255; 8]));
     }
 }

@@ -45,6 +45,10 @@ pub fn build(state: AppState, config: &Config) -> Result<Router, RouterError> {
             "/settings/prefilter-defaults",
             get(settings::get_prefilter_defaults).put(settings::update_prefilter_defaults),
         )
+        .route(
+            "/settings/qualification-defaults",
+            get(settings::get_qualification_defaults).put(settings::update_qualification_defaults),
+        )
         .route("/discovery", get(discovery::get))
         .route("/tokens/{mint}", get(tokens::get))
         .route("/events", get(events::get));

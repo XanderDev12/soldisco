@@ -13,6 +13,8 @@ pub enum PumpProgram {
 pub enum PumpEventKind {
     Create,
     Trade,
+    LiquidityDeposit,
+    LiquidityWithdraw,
     Complete,
     CompletePumpAmmMigration,
     CreatePool,
@@ -58,6 +60,8 @@ pub enum PumpEvent {
     PumpSwapCreatePool(PumpSwapCreatePoolEvent),
     PumpSwapBuy(PumpSwapBuyEvent),
     PumpSwapSell(PumpSwapSellEvent),
+    PumpSwapDeposit(PumpSwapDepositEvent),
+    PumpSwapWithdraw(PumpSwapWithdrawEvent),
 }
 
 impl PumpEvent {
@@ -66,6 +70,8 @@ impl PumpEvent {
         match self {
             Self::Create(_) => PumpEventKind::Create,
             Self::Trade(_) | Self::PumpSwapBuy(_) | Self::PumpSwapSell(_) => PumpEventKind::Trade,
+            Self::PumpSwapDeposit(_) => PumpEventKind::LiquidityDeposit,
+            Self::PumpSwapWithdraw(_) => PumpEventKind::LiquidityWithdraw,
             Self::Complete(_) => PumpEventKind::Complete,
             Self::CompletePumpAmmMigration(_) => PumpEventKind::CompletePumpAmmMigration,
             Self::PumpSwapCreatePool(_) => PumpEventKind::CreatePool,
@@ -82,6 +88,8 @@ impl PumpEvent {
             Self::PumpSwapCreatePool(event) => event.timestamp,
             Self::PumpSwapBuy(event) => event.timestamp,
             Self::PumpSwapSell(event) => event.timestamp,
+            Self::PumpSwapDeposit(event) => event.timestamp,
+            Self::PumpSwapWithdraw(event) => event.timestamp,
         }
     }
 }
@@ -275,4 +283,54 @@ pub struct PumpSwapSellEvent {
     pub virtual_quote_reserves: i128,
     pub can_boost: bool,
     pub base_supply: u64,
+}
+
+/// PumpSwap `DepositEvent` at the pinned public-IDL revision.
+///
+/// Amount and reserve fields preserve PumpSwap's source base/quote order.
+/// Consumers must orient them through the pool's registered mint pair before
+/// treating them as token/quote values.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PumpSwapDepositEvent {
+    pub timestamp: i64,
+    pub lp_token_amount_out: u64,
+    pub max_base_amount_in: u64,
+    pub max_quote_amount_in: u64,
+    pub user_base_token_reserves: u64,
+    pub user_quote_token_reserves: u64,
+    pub pool_base_token_reserves: u64,
+    pub pool_quote_token_reserves: u64,
+    pub base_amount_in: u64,
+    pub quote_amount_in: u64,
+    pub lp_mint_supply: u64,
+    pub pool: String,
+    pub user: String,
+    pub user_base_token_account: String,
+    pub user_quote_token_account: String,
+    pub user_pool_token_account: String,
+}
+
+/// PumpSwap `WithdrawEvent` at the pinned public-IDL revision.
+///
+/// Amount and reserve fields preserve PumpSwap's source base/quote order.
+/// Consumers must orient them through the pool's registered mint pair before
+/// treating them as token/quote values.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PumpSwapWithdrawEvent {
+    pub timestamp: i64,
+    pub lp_token_amount_in: u64,
+    pub min_base_amount_out: u64,
+    pub min_quote_amount_out: u64,
+    pub user_base_token_reserves: u64,
+    pub user_quote_token_reserves: u64,
+    pub pool_base_token_reserves: u64,
+    pub pool_quote_token_reserves: u64,
+    pub base_amount_out: u64,
+    pub quote_amount_out: u64,
+    pub lp_mint_supply: u64,
+    pub pool: String,
+    pub user: String,
+    pub user_base_token_account: String,
+    pub user_quote_token_account: String,
+    pub user_pool_token_account: String,
 }

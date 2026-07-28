@@ -10,7 +10,8 @@ use axum::http::{
 };
 use soldisco_api_contracts::{
     DiscoverySnapshot, DiscoveryToken, LiveEnvelope, LiveEvent, PrefilterDefaults,
-    PrefilterDefaultsBounds, PrefilterDefaultsResponse, SettingsApplyRequirement,
+    PrefilterDefaultsBounds, PrefilterDefaultsResponse, QualificationDefaults,
+    QualificationDefaultsBounds, QualificationDefaultsResponse, SettingsApplyRequirement,
 };
 use soldisco_persistence::{Database, PersistenceError};
 use tokio::sync::broadcast;
@@ -18,7 +19,7 @@ use tracing::error;
 
 use crate::{
     config::Config,
-    jobs::pipeline::PipelineConfig,
+    jobs::{pipeline::PipelineConfig, qualification::finalize_abandoned_windows},
     supervisor::{StreamSupervisor, SupervisorError},
 };
 
@@ -53,7 +54,26 @@ impl AppState {
         database
             .initialize_prefilter_defaults(config.prefilter_defaults())
             .await?;
+        database
+            .initialize_qualification_defaults(QualificationDefaults::SAFE_INITIAL)
+            .await?;
         let events = LiveEventBus::new();
+        let recovery_run_id = format!("soldisco-startup-recovery-{}", std::process::id());
+        match finalize_abandoned_windows(&database, &events, &recovery_run_id).await {
+            Ok(recovered) if recovered > 0 => {
+                tracing::warn!(
+                    windows = recovered,
+                    "finalized interrupted discovery windows during startup recovery"
+                );
+            }
+            Ok(_) => {}
+            Err(recovery_error) => {
+                error!(
+                    error = %recovery_error,
+                    "startup discovery-window recovery could not finish; runtime retry remains available"
+                );
+            }
+        }
         let supervisor = StreamSupervisor::restore(
             database.clone(),
             events.clone(),
@@ -120,6 +140,26 @@ impl AppState {
         Ok(prefilter_defaults_response(stored))
     }
 
+    pub async fn qualification_defaults(
+        &self,
+    ) -> Result<QualificationDefaultsResponse, PersistenceError> {
+        let stored = self.inner.database.load_qualification_defaults().await?;
+        Ok(qualification_defaults_response(stored))
+    }
+
+    pub async fn update_qualification_defaults(
+        &self,
+        expected_revision: u64,
+        values: QualificationDefaults,
+    ) -> Result<QualificationDefaultsResponse, PersistenceError> {
+        let stored = self
+            .inner
+            .database
+            .update_qualification_defaults(expected_revision, values)
+            .await?;
+        Ok(qualification_defaults_response(stored))
+    }
+
     #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<LiveEnvelope> {
         self.inner.events.subscribe()
@@ -153,6 +193,17 @@ fn prefilter_defaults_response(
         bounds: PrefilterDefaultsBounds::SUPPORTED,
         revision: stored.revision,
         apply_requirement: SettingsApplyRequirement::StreamRestart,
+    }
+}
+
+fn qualification_defaults_response(
+    stored: soldisco_persistence::StoredQualificationDefaults,
+) -> QualificationDefaultsResponse {
+    QualificationDefaultsResponse {
+        values: stored.values,
+        bounds: QualificationDefaultsBounds::SUPPORTED,
+        revision: stored.revision,
+        apply_requirement: SettingsApplyRequirement::NewWindows,
     }
 }
 

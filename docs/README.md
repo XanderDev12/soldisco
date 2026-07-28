@@ -32,9 +32,11 @@ accumulate in one architecture file.
 The existing React/TypeScript application is the frontend source of truth, and
 Rust-owned domain and API contracts are authoritative for connected backend
 behavior. The implemented local slice covers Pump/PumpSwap collection,
-durability, `OBSERVE_ALL` discovery projection, and HTTP/SSE UI wiring.
-Documents distinguish that slice from deferred screening, Raydium, strategy,
-AI, trading, and wallet behavior.
+durable bounded-window activity qualification, the default `QUALIFIED_ONLY`
+discovery projection, PostgreSQL-persisted Controls settings and stream intent,
+safe browser-local layout/mode preferences, and HTTP/SSE UI wiring. Documents
+distinguish this inexpensive qualification gate from deferred deterministic
+risk, Raydium, strategy, AI, trading, and wallet behavior.
 
 The current runtime target is entirely local: React on `localhost:3000`, the
 Rust/Axum server on `127.0.0.1:8080`, and PostgreSQL on

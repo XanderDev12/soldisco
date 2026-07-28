@@ -329,8 +329,8 @@ async fn record_terminal_discovery_failure(
 ) -> Result<(), PersistenceError> {
     let sequence = sqlx::query_scalar::<_, i64>(
         "UPDATE discovery_projection_state \
-         SET pending = GREATEST(pending - 1, 0), \
-             rejected = rejected + 1, \
+         SET queued_facts = GREATEST(queued_facts - 1, 0), \
+             processing_failures = processing_failures + 1, \
              sequence = sequence + 1, \
              updated_at = NOW() \
          WHERE singleton = TRUE \
@@ -340,13 +340,13 @@ async fn record_terminal_discovery_failure(
     .await?;
 
     sqlx::query(
-        "INSERT INTO discovery_rejection_summaries (\
+        "INSERT INTO discovery_processing_failure_summaries (\
             reason_code, count, last_seen_unix_ms\
          ) VALUES ($1, 1, $2) \
          ON CONFLICT (reason_code) DO UPDATE \
-         SET count = discovery_rejection_summaries.count + 1, \
+         SET count = discovery_processing_failure_summaries.count + 1, \
              last_seen_unix_ms = GREATEST(\
-                discovery_rejection_summaries.last_seen_unix_ms, \
+                discovery_processing_failure_summaries.last_seen_unix_ms, \
                 EXCLUDED.last_seen_unix_ms\
              ), \
              updated_at = NOW()",

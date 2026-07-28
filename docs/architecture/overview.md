@@ -29,48 +29,68 @@ always-on or cloud backend is part of the current architecture.
    without HTTP; an attempted request failure cancels the window and skips that
    signature.
 3. The current-IDL decoder strictly attributes the accepted discovery
-   transaction's direct logs and Anchor CPI event instructions.
+   transaction's direct logs and Anchor CPI event instructions while keeping
+   the direct program-data copy as the one canonical event identity.
 4. The persistence boundary records decoder provenance, Solana coordinates,
    exact market identity, event time, receipt time, compact source evidence,
    and durable work state. Known malformed layouts go to quarantine.
 5. Only after commit does the server wake idempotent downstream projection
    work; PostgreSQL remains the work source of truth.
-6. The implemented discovery worker projects every structurally valid
-   candidate as `OBSERVED`. Successful normalization confirms its provisional
-   bounded in-memory window; matching mint/pool activity, including activity
-   received during the one-shot read, routes directly from PubSub into
-   venue-scoped activity.
-7. Coalesced named SSE notifications tell the browser to refresh bounded,
+6. The discovery worker projects every structurally valid candidate as
+   `OBSERVED`. Successful normalization atomically confirms a durable,
+   exact-market window with half-open receipt-time membership and pinned
+   Prefilter and Qualification Defaults revisions.
+7. Matching mint/pool activity, including activity received during the one-shot
+   read, routes directly from PubSub into that window without activity HTTP.
+   The immediately following silent event self-CPI is paired 1:1 inside the
+   same instruction and corroborates rather than duplicates its canonical
+   direct event. CPI-only, out-of-order, mismatched, malformed, truncated, or
+   unbalanced source logs make same-source windows incomplete.
+8. At close, a complete claim waits for source progress through the boundary,
+   settlement of every admitted batch, and same-window projection work.
+   Cancellation and finalization are ordered so cancellation first produces
+   `UNKNOWN`, while a claim first freezes completeness for that attempt.
+   Immutable versioned trade, flow, wallet, price, reserve, and lifecycle
+   features are then frozen.
+9. Versioned qualification rules commit a `PASS`, `REJECT`, or `UNKNOWN`
+   assessment and evidence. A complete pass advances only the current
+   exact-market candidate to `QUALIFIED`; interrupted or incomplete windows are
+   `UNKNOWN`.
+10. The default `QUALIFIED_ONLY` projection publishes current qualified
+   candidates, separate counters, and qualification rejection summaries.
+   Coalesced named SSE notifications tell the browser to refresh bounded,
    authoritative HTTP snapshots whose truncation metadata is explicit.
-8. Future rolling metrics and cheap qualification limit deeper RPC work.
-9. Future provider-neutral RPC readers supply deterministic risk evidence.
-10. Supported Raydium CPMM, CLMM, or AMM v4 pools may later add post-Pump,
+11. Future provider-neutral RPC readers supply deterministic risk evidence.
+12. Supported Raydium CPMM, CLMM, or AMM v4 pools may later add post-Pump,
    venue-specific evidence for the same mint.
-11. Risk and opportunity modules later add explainable, versioned results with
+13. Risk and opportunity modules later add explainable, versioned results with
    freshness metadata.
-12. Approved candidates later enter richer durable monitoring windows; these
+14. Approved candidates later enter richer durable monitoring windows; these
     are distinct from the short implemented pre-decision activity window.
-13. Market, wallet-score, and wallet-cluster snapshots later produce immutable
+15. Market, wallet-score, and wallet-cluster snapshots later produce immutable
     strategy inputs.
-14. Enabled strategies evaluate candidates repeatedly and independently.
-15. Advisory AI may attach asynchronous commentary without blocking the flow.
-16. Rebuildable projections eventually publish approved tokens, counters,
-    rejection summaries, and component health to the browser over HTTP/SSE.
-17. Future paper and interactive-live execution consume explicit trade
+16. Enabled strategies evaluate candidates repeatedly and independently.
+17. Advisory AI may attach asynchronous commentary without blocking the flow.
+18. Future risk, strategy, portfolio, and execution projections extend the
+    current qualified feed without changing its historical evidence.
+19. Future paper and interactive-live execution consume explicit trade
     proposals through a separate policy boundary.
 
 WebSocket live delivery is explicitly not complete in the current live-first
 mode. After a disconnect, stream restart, pipeline-attempt restart, or process
-restart, each source resumes at the current head without HTTP backfill and the
-ephemeral window registry starts empty. One-shot transaction failures are also
-skipped. A shared rate-limit cooldown delays later distinct signatures but never
-retries the failed one. This trades completeness for low latency and bounded
-public-RPC load; reserved checkpoint/recovery components are not consumed
-unless a future explicit recovery mode is designed.
+restart, each source resumes at the current head without HTTP backfill. The
+ephemeral routing registry is recreated, but confirmed window identities and
+committed members remain in PostgreSQL. Affected windows finalize with explicit
+incomplete provenance and `UNKNOWN`, rather than treating missed activity as
+zero. One-shot transaction failures are still skipped. A shared rate-limit
+cooldown delays later distinct signatures but never retries the failed one.
+Reserved checkpoint/recovery components are not consumed unless a future
+explicit recovery mode is designed.
 
-The current local UI renders real `OBSERVED` discovery candidates when the
-stream is running. Empty data means the durable projection is empty, not that
-sample tokens were substituted. Synthetic records belong only in isolated
+The current local UI renders real `QUALIFIED` candidates by default. Empty data
+means no current candidate passed the gate, not that sample tokens were
+substituted. Diagnostic `OBSERVE_ALL` can expose structurally valid `OBSERVED`
+candidates for pipeline validation. Synthetic records belong only in isolated
 tests and must not appear as live product state.
 
 ## State model
@@ -84,12 +104,22 @@ Richer projections must state whether data is available, missing, stale,
 invalid, or in error. Future rejected candidates, missing observations, and
 source outages must remain part of the historical record.
 
-The current `OBSERVE_ALL` projection is intentionally pre-screening. It has no
-thresholds and does not claim approval, rejection, risk, opportunity, or
-strategy results. Unsupported or malformed decoder inputs are not admitted as
+Prefilter Defaults, Qualification Defaults, and requested-running stream intent
+are PostgreSQL state, not browser-session state. Prefilter edits require a
+stopped stream and apply at the next start. Qualification edits use optimistic
+append-only revisions; each durable window pins one revision and complete
+values, so later edits affect new windows only. Server startup restores a true
+requested-running intent through a fresh supervised pipeline rather than
+persisting runtime task state.
+
+`OBSERVED`, `QUALIFIED`, and future `APPROVED` are distinct. `OBSERVED` means
+structurally admitted. `QUALIFIED` means only that one complete exact-market
+window met the global activity and concentration rules. It is not scam
+clearance, safety approval, an ROI estimate, a recommendation, or strategy
+evidence. Unsupported or malformed decoder inputs are not admitted as
 candidates; known malformed evidence is quarantined for bounded audit instead
-of blocking the stream. A structurally attributable fact whose market cannot be
-resolved is also durably quarantined; automatic reprocessing of that
+of blocking the stream. A structurally attributable fact whose market cannot
+be resolved is also durably quarantined; automatic reprocessing of that
 historical quarantine is future work.
 
 When implemented, Raydium enrichment will be independently available, missing,
@@ -106,6 +136,12 @@ focused module. Shared primitives are reused without combining independent
 screens into a single file. Regression tests verify the expected view files and
 keep the orchestration layer within a small line-count budget.
 
+The Paper/Live execution-mode presentation and adjustable sidebar/inspector
+widths are validated browser-local preferences. They persist in
+`localStorage` without granting wallet, signing, or execution authority.
+Unsaved settings text, order drafts, active navigation, token selection, tabs,
+and modals remain transient.
+
 ## Boundaries
 
 - The web app renders state and collects explicit user intent.
@@ -116,8 +152,8 @@ keep the orchestration layer within a small line-count budget.
   token or combine pools without explicit rules.
 - `solana-rpc` owns provider-neutral transport, health, and reserved recovery
   primitives.
-- `discovery-engine` owns bounded observation windows and rolling metrics; cheap
-  qualification is not wired yet.
+- `discovery-engine` owns bounded observation windows, immutable feature
+  snapshots, and strategy-neutral activity qualification.
 - `risk-engine` will own deterministic checks, risk, and opportunity ratings.
 - `persistence` is the only SQLx/PostgreSQL implementation boundary.
 - `projections` creates rebuildable UI read models.
@@ -131,10 +167,10 @@ keep the orchestration layer within a small line-count budget.
 
 Logical ownership boundaries do not require separate network services. The
 first operating backend composes Axum routes, live-first Pump/PumpSwap intake,
-structural discovery projection, bounded observation windows,
-retention/storage maintenance, and observability in one Rust process. Rolling
-qualification, deterministic risk, and Raydium enrichment remain modules in
-this same process when implemented.
+structural discovery, durable bounded-window qualification, projection,
+retention/storage maintenance, and observability in one Rust process.
+Deterministic risk and Raydium enrichment remain modules in this same process
+when implemented.
 
 Workers are supervised Tokio tasks. High-volume paths use bounded in-process
 channels for backpressure, while small control paths use focused Tokio
@@ -159,7 +195,6 @@ decision.
 - Dedicated-provider capacity and multi-endpoint RPC fallback policy
 - Scam and rug-check rule implementations
 - Supported Raydium CPMM, CLMM, and AMM v4 enrichment
-- Rolling-window qualification and explicit approval/rejection projection
 - Strategy configuration and evaluation
 
 ## Deferred capabilities

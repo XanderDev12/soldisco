@@ -1,9 +1,14 @@
-import type { StreamStatus } from "../../lib/soldisco-api/contracts";
+import type {
+  DiscoveryMode,
+  StreamStatus,
+} from "../../lib/soldisco-api/contracts";
 
 type EmptyStreamStateInput = {
   backendConnected: boolean;
   streamStatus: StreamStatus | null;
   requestedRunning: boolean;
+  mode: DiscoveryMode;
+  dataStale: boolean;
 };
 
 export type EmptyStreamState = {
@@ -15,7 +20,17 @@ export function describeEmptyStream({
   backendConnected,
   streamStatus,
   requestedRunning,
+  mode,
+  dataStale,
 }: EmptyStreamStateInput): EmptyStreamState {
+  if (dataStale) {
+    return {
+      title: "Discovery snapshot is stale",
+      detail:
+        "The last snapshot could not be refreshed. Counts and visible candidates may be out of date.",
+    };
+  }
+
   if (!backendConnected || streamStatus === null) {
     return {
       title: "Waiting for the local backend",
@@ -31,11 +46,26 @@ export function describeEmptyStream({
           "The backend is restoring its state and opening the Pump data sources.",
       };
     case "RUNNING":
-      return {
-        title: "Waiting for decoded discoveries",
-        detail:
-          "Structurally valid Pump and PumpSwap events will appear here.",
-      };
+      switch (mode) {
+        case "OBSERVE_ALL":
+          return {
+            title: "Waiting for decoded discoveries",
+            detail:
+              "Structurally valid Pump and PumpSwap events will appear here.",
+          };
+        case "QUALIFIED_ONLY":
+          return {
+            title: "Waiting for qualified discoveries",
+            detail:
+              "Candidates appear after a complete observation window passes the configured qualification rules.",
+          };
+        case "APPROVED_ONLY":
+          return {
+            title: "Waiting for approved discoveries",
+            detail:
+              "Candidates appear only after an explicit deterministic safety pass.",
+          };
+      }
     case "DEGRADED":
       return {
         title: "Collector is running in a degraded state",

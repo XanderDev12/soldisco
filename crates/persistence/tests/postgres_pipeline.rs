@@ -6,7 +6,7 @@ use std::{
 
 use soldisco_api_contracts::{
     DiscoveryActivity, DiscoveryMode, DiscoveryStage, DiscoveryToken, PrefilterDefaults,
-    PrefilterDefaultsValidationError,
+    PrefilterDefaultsValidationError, QualificationDefaults,
 };
 use soldisco_domain::{
     ChainCoordinate, Commitment, MarketIdentity, Network, NormalizedObservation, ObservationKey,
@@ -51,6 +51,8 @@ fn observation(
                 side: TradeSide::Sell,
                 ..
             } => "SELL",
+            ObservationPayload::LiquidityDeposited { .. } => "DEPOSIT",
+            ObservationPayload::LiquidityWithdrawn { .. } => "WITHDRAW",
             ObservationPayload::MarketCompleted { .. } => "COMPLETE",
             ObservationPayload::MarketMigrated { .. } => "MIGRATE",
         }
@@ -60,6 +62,7 @@ fn observation(
         received_time_unix_ms: i64::try_from(slot).expect("test slot"),
         raw_evidence_hash: format!("hash-{signature}"),
         source_evidence_base64: "dGVzdC1ldmlkZW5jZQ==".to_owned(),
+        source_details: serde_json::json!({"event_kind": "fixture"}),
         payload,
     }
 }
@@ -109,6 +112,7 @@ fn token(
             base_volume_units: "0".to_owned(),
             quote_volume_units: "0".to_owned(),
         },
+        qualification: None,
         risk_score: None,
         opportunity_score: None,
     }
@@ -186,10 +190,19 @@ async fn durable_pipeline_is_idempotent_recoverable_and_market_scoped() {
     let connect_options = PgConnectOptions::from_str(&database_url)
         .expect("valid PostgreSQL test URL")
         .options([("search_path", schema.as_str())]);
+    let verification_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(connect_options.clone())
+        .await
+        .expect("test database verification connection");
     let database = Database::connect_with_options(connect_options, 5)
         .await
         .expect("test database connection");
     database.migrate().await.expect("migrations");
+    database
+        .set_discovery_mode(DiscoveryMode::ObserveAll)
+        .await
+        .expect("integration test uses the diagnostic observe-all projection");
     database
         .bind_network(Network::SolanaMainnet)
         .await
@@ -272,7 +285,41 @@ async fn durable_pipeline_is_idempotent_recoverable_and_market_scoped() {
         updated_prefilter
     );
 
-    let created = observation(
+    let initial_qualification = database
+        .initialize_qualification_defaults(QualificationDefaults::SAFE_INITIAL)
+        .await
+        .expect("initial qualification defaults");
+    assert_eq!(initial_qualification.revision, 1);
+    assert_eq!(
+        initial_qualification.values,
+        QualificationDefaults::SAFE_INITIAL
+    );
+    let mut changed_qualification = QualificationDefaults::SAFE_INITIAL;
+    changed_qualification.minimum_trades = 6;
+    assert_eq!(
+        database
+            .initialize_qualification_defaults(changed_qualification)
+            .await
+            .expect("repeat initialization preserves the operator revision"),
+        initial_qualification
+    );
+    let updated_qualification = database
+        .update_qualification_defaults(1, changed_qualification)
+        .await
+        .expect("revision-matched qualification update");
+    assert_eq!(updated_qualification.revision, 2);
+    assert_eq!(updated_qualification.values, changed_qualification);
+    assert!(matches!(
+        database
+            .update_qualification_defaults(1, QualificationDefaults::SAFE_INITIAL)
+            .await,
+        Err(PersistenceError::QualificationDefaultsRevisionConflict {
+            expected: 1,
+            actual: Some(2),
+        })
+    ));
+
+    let mut created = observation(
         market(
             "mint-a",
             "bonding-curve-a",
@@ -290,12 +337,127 @@ async fn durable_pipeline_is_idempotent_recoverable_and_market_scoped() {
             user: "user".to_owned(),
         },
     );
+    created.key.coordinate.transaction_index = None;
+    created.received_time_unix_ms += 1_000;
     persist(&database, &created, Some("Token A"), Some("TOKA")).await;
     assert!(
         !database
             .insert_observation(&created)
             .await
             .expect("deduplicated replay")
+    );
+
+    let mut earlier_transport_replay = created.clone();
+    earlier_transport_replay.key.coordinate.transaction_index = Some(10);
+    earlier_transport_replay.commitment = Commitment::Finalized;
+    earlier_transport_replay.received_time_unix_ms -= 1_000;
+    assert!(
+        !database
+            .insert_observation(&earlier_transport_replay)
+            .await
+            .expect("earlier compatible replay")
+    );
+
+    let mut transport_replay = created.clone();
+    transport_replay.key.coordinate.transaction_index = Some(10);
+    transport_replay.commitment = Commitment::Finalized;
+    transport_replay.received_time_unix_ms += 1_000;
+    assert!(
+        !database
+            .insert_observation(&transport_replay)
+            .await
+            .expect("later replay with enriched transport metadata")
+    );
+
+    let observation_work_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) \
+         FROM observation_work AS work \
+         JOIN chain_observations AS observation ON observation.id = work.observation_id \
+         WHERE observation.signature = 'signature-create'",
+    )
+    .fetch_one(&verification_pool)
+    .await
+    .expect("work count after transport replay");
+    assert_eq!(
+        observation_work_count, 1,
+        "replay must not enqueue duplicate discovery work"
+    );
+
+    let mut conflicting_raw = created.clone();
+    conflicting_raw.raw_evidence_hash = "conflicting-raw-evidence-hash".to_owned();
+    assert!(matches!(
+        database.insert_observation(&conflicting_raw).await,
+        Err(PersistenceError::ObservationEvidenceConflict {
+            signature,
+            instruction_index: 0,
+            event_index: 0,
+            ..
+        }) if signature == "signature-create"
+    ));
+    let mut conflicting_raw_bytes = created.clone();
+    conflicting_raw_bytes.source_evidence_base64 = "b3RoZXItZXZpZGVuY2U=".to_owned();
+    assert!(matches!(
+        database.insert_observation(&conflicting_raw_bytes).await,
+        Err(PersistenceError::ObservationEvidenceConflict {
+            signature,
+            instruction_index: 0,
+            event_index: 0,
+            ..
+        }) if signature == "signature-create"
+    ));
+    let mut conflicting_payload = created.clone();
+    if let ObservationPayload::TokenCreated { name, .. } = &mut conflicting_payload.payload {
+        *name = "Conflicting Token".to_owned();
+    }
+    assert!(matches!(
+        database.insert_observation(&conflicting_payload).await,
+        Err(PersistenceError::ObservationEvidenceConflict {
+            network,
+            source_program,
+            signature,
+            instruction_index: 0,
+            event_index: 0,
+        }) if network == "SOLANA_MAINNET"
+            && source_program == "PUMP"
+            && signature == "signature-create"
+    ));
+    let stored_created: NormalizedObservation = serde_json::from_value(
+        sqlx::query_scalar(
+            "SELECT normalized_observation \
+             FROM chain_observations \
+             WHERE network = 'SOLANA_MAINNET' \
+               AND source_program = 'PUMP' \
+               AND signature = 'signature-create' \
+               AND instruction_index = 0 \
+               AND event_index = 0",
+        )
+        .fetch_one(&verification_pool)
+        .await
+        .expect("stored observation after divergent replay"),
+    )
+    .expect("stored normalized observation remains decodable");
+    let mut earliest_created = created.clone();
+    earliest_created.received_time_unix_ms = earlier_transport_replay.received_time_unix_ms;
+    assert_eq!(
+        stored_created, earliest_created,
+        "transport replay must retain the earliest receipt without rewriting other metadata"
+    );
+    let stored_transport = sqlx::query_as::<_, (Option<i64>, String, i64)>(
+        "SELECT transaction_index, commitment, received_time_unix_ms \
+         FROM chain_observations \
+         WHERE signature = 'signature-create'",
+    )
+    .fetch_one(&verification_pool)
+    .await
+    .expect("stored transport metadata after replay");
+    assert_eq!(
+        stored_transport,
+        (
+            None,
+            "CONFIRMED".to_owned(),
+            earlier_transport_replay.received_time_unix_ms
+        ),
+        "transport replay must retain the earliest receipt and original optional metadata"
     );
 
     for (slot, signature, side, base, quote) in [
@@ -334,10 +496,12 @@ async fn durable_pipeline_is_idempotent_recoverable_and_market_scoped() {
     assert_eq!(pump_snapshot.tokens[0].activity.quote_volume_units, "14");
     let mut pump_approved = pump_snapshot.tokens[0].clone();
     pump_approved.stage = DiscoveryStage::Approved;
-    database
-        .commit_discovery_approval(&pump_approved, "STRUCTURAL_PASS", "1")
-        .await
-        .expect("Pump approval");
+    assert!(matches!(
+        database
+            .commit_discovery_approval(&pump_approved, "STRUCTURAL_PASS", "1")
+            .await,
+        Err(PersistenceError::CandidateNotQualified { .. })
+    ));
 
     let pool = PumpSwapPool {
         network: Network::SolanaMainnet,
@@ -463,16 +627,18 @@ async fn durable_pipeline_is_idempotent_recoverable_and_market_scoped() {
 
     let mut approved = after_stale;
     approved.stage = DiscoveryStage::Approved;
-    database
-        .commit_discovery_approval(&approved, "STRUCTURAL_PASS", "1")
-        .await
-        .expect("explicit promotion");
+    assert!(matches!(
+        database
+            .commit_discovery_approval(&approved, "STRUCTURAL_PASS", "1")
+            .await,
+        Err(PersistenceError::CandidateNotQualified { .. })
+    ));
     let approved_snapshot = database
         .load_discovery_snapshot()
         .await
         .expect("approved snapshot");
-    assert_eq!(approved_snapshot.tokens.len(), 1);
-    assert_eq!(approved_snapshot.counters.approved, 1);
+    assert!(approved_snapshot.tokens.is_empty());
+    assert_eq!(approved_snapshot.counters.approved, 0);
 
     let checkpoint = RecoveryCheckpoint {
         network: Network::SolanaMainnet,
@@ -790,7 +956,8 @@ async fn durable_pipeline_is_idempotent_recoverable_and_market_scoped() {
         .await
         .expect("final snapshot");
     assert_eq!(final_snapshot.counters.pending, 0);
-    assert_eq!(final_snapshot.counters.rejected, 1);
+    assert_eq!(final_snapshot.counters.processing_failures, 1);
+    assert_eq!(final_snapshot.counters.rejected, 0);
 
     let retained_pending = observation(
         market(
@@ -902,6 +1069,7 @@ async fn durable_pipeline_is_idempotent_recoverable_and_market_scoped() {
     assert_eq!(retained_aggregate.market_address, "pump-swap-pool-c");
 
     database.close().await;
+    verification_pool.close().await;
     sqlx::query(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
         .execute(&administration_pool)
         .await

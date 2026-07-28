@@ -14,14 +14,14 @@ export function RejectionLog({
   return (
     <details className="rejection-log">
       <summary>
-        Rejection log
+        Activity rejection log
         <span>{totalRejected ?? "—"}</span>
       </summary>
       <div className="rejection-log__panel">
         <div className="rejection-log__head">
           <div>
-            <strong>Screening rejections</strong>
-            <span>Aggregated candidate rejection reasons</span>
+            <strong>Activity qualification rejections</strong>
+            <span>Cumulative reasons from finalized observation windows</span>
           </div>
           {entries.length > visibleEntries.length && (
             <small>Showing {visibleEntries.length} reasons</small>
@@ -30,7 +30,7 @@ export function RejectionLog({
 
         {visibleEntries.length === 0 ? (
           <div className="rejection-log__empty">
-            No rejected candidates recorded.
+            No activity qualification rejections recorded.
           </div>
         ) : (
           <ol className="rejection-log__entries">

@@ -4,8 +4,9 @@ use soldisco_source_pump::{
     ANCHOR_EVENT_CPI_DISCRIMINATOR, COMPLETE_EVENT_DISCRIMINATOR,
     COMPLETE_PUMP_AMM_MIGRATION_EVENT_DISCRIMINATOR, CREATE_EVENT_DISCRIMINATOR,
     CREATE_POOL_EVENT_DISCRIMINATOR, DecodeError, PUMP_PROGRAM_ID,
-    PUMP_SWAP_BUY_EVENT_DISCRIMINATOR, PUMP_SWAP_PROGRAM_ID, PUMP_SWAP_SELL_EVENT_DISCRIMINATOR,
-    PumpEvent, TRADE_EVENT_DISCRIMINATOR, TradeDirection, decode_anchor_event, decode_cpi_event,
+    PUMP_SWAP_BUY_EVENT_DISCRIMINATOR, PUMP_SWAP_DEPOSIT_EVENT_DISCRIMINATOR, PUMP_SWAP_PROGRAM_ID,
+    PUMP_SWAP_SELL_EVENT_DISCRIMINATOR, PUMP_SWAP_WITHDRAW_EVENT_DISCRIMINATOR, PumpEvent,
+    TRADE_EVENT_DISCRIMINATOR, TradeDirection, decode_anchor_event, decode_cpi_event,
     decode_instruction_events, decode_instruction_program_data_logs, decode_program_data_log,
     is_anchor_event_cpi,
 };
@@ -184,6 +185,30 @@ fn pump_swap_sell_fixture() -> Vec<u8> {
     bytes
 }
 
+fn pump_swap_deposit_fixture() -> Vec<u8> {
+    let mut bytes = PUMP_SWAP_DEPOSIT_EVENT_DISCRIMINATOR.to_vec();
+    bytes.extend(1_720_000_007_i64.to_le_bytes());
+    for value in 1_u64..=10 {
+        bytes.extend((value * 100).to_le_bytes());
+    }
+    for marker in 1_u8..=5 {
+        push_pubkey(&mut bytes, marker);
+    }
+    bytes
+}
+
+fn pump_swap_withdraw_fixture() -> Vec<u8> {
+    let mut bytes = PUMP_SWAP_WITHDRAW_EVENT_DISCRIMINATOR.to_vec();
+    bytes.extend(1_720_000_008_i64.to_le_bytes());
+    for value in 11_u64..=20 {
+        bytes.extend((value * 100).to_le_bytes());
+    }
+    for marker in 6_u8..=10 {
+        push_pubkey(&mut bytes, marker);
+    }
+    bytes
+}
+
 #[test]
 fn decodes_current_pump_create_and_quote_mint_layout() {
     let decoded =
@@ -272,6 +297,63 @@ fn decodes_current_pump_swap_pool_buy_and_sell_layouts() {
     assert_eq!(buy.virtual_quote_reserves, -24);
     assert_eq!(sell.quote_amount_out, 700);
     assert_eq!(sell.virtual_quote_reserves, -20);
+}
+
+#[test]
+fn decodes_strict_pinned_pump_swap_liquidity_layouts() {
+    let deposit = decode_anchor_event(
+        PUMP_SWAP_PROGRAM_ID,
+        coordinate(3),
+        &pump_swap_deposit_fixture(),
+    )
+    .expect("pinned DepositEvent layout should decode");
+    let withdraw = decode_anchor_event(
+        PUMP_SWAP_PROGRAM_ID,
+        coordinate(4),
+        &pump_swap_withdraw_fixture(),
+    )
+    .expect("pinned WithdrawEvent layout should decode");
+
+    let PumpEvent::PumpSwapDeposit(deposit) = deposit.event else {
+        panic!("expected deposit event");
+    };
+    let PumpEvent::PumpSwapWithdraw(withdraw) = withdraw.event else {
+        panic!("expected withdraw event");
+    };
+
+    assert_eq!(deposit.lp_token_amount_out, 100);
+    assert_eq!(deposit.pool_base_token_reserves, 600);
+    assert_eq!(deposit.pool_quote_token_reserves, 700);
+    assert_eq!(deposit.base_amount_in, 800);
+    assert_eq!(deposit.quote_amount_in, 900);
+    assert_eq!(deposit.lp_mint_supply, 1_000);
+    assert_ne!(deposit.pool, deposit.user);
+
+    assert_eq!(withdraw.lp_token_amount_in, 1_100);
+    assert_eq!(withdraw.pool_base_token_reserves, 1_600);
+    assert_eq!(withdraw.pool_quote_token_reserves, 1_700);
+    assert_eq!(withdraw.base_amount_out, 1_800);
+    assert_eq!(withdraw.quote_amount_out, 1_900);
+    assert_eq!(withdraw.lp_mint_supply, 2_000);
+    assert_ne!(withdraw.pool, withdraw.user);
+}
+
+#[test]
+fn pump_swap_liquidity_decoders_reject_truncated_and_trailing_bytes() {
+    let deposit = pump_swap_deposit_fixture();
+    let truncated = decode_anchor_event(
+        PUMP_SWAP_PROGRAM_ID,
+        coordinate(0),
+        &deposit[..deposit.len() - 1],
+    )
+    .expect_err("truncated DepositEvent must fail closed");
+    assert!(matches!(truncated, DecodeError::Truncated { .. }));
+
+    let mut withdraw = pump_swap_withdraw_fixture();
+    withdraw.push(0);
+    let trailing = decode_anchor_event(PUMP_SWAP_PROGRAM_ID, coordinate(1), &withdraw)
+        .expect_err("trailing WithdrawEvent bytes must fail closed");
+    assert!(matches!(trailing, DecodeError::TrailingBytes(1)));
 }
 
 #[test]

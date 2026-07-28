@@ -8,8 +8,8 @@ use crate::{
     CREATE_POOL_EVENT_DISCRIMINATOR, DecodedPumpEvent, PUMP_SWAP_BUY_EVENT_DISCRIMINATOR,
     PUMP_SWAP_SELL_EVENT_DISCRIMINATOR, PumpCompleteEvent, PumpCreateEvent, PumpEvent,
     PumpMigrationEvent, PumpProgram, PumpShareholder, PumpSwapBuyEvent, PumpSwapCreatePoolEvent,
-    PumpSwapSellEvent, PumpTradeEvent, TRADE_EVENT_DISCRIMINATOR, TradeDirection,
-    supported_program,
+    PumpSwapDepositEvent, PumpSwapSellEvent, PumpSwapWithdrawEvent, PumpTradeEvent,
+    TRADE_EVENT_DISCRIMINATOR, TradeDirection, supported_program,
 };
 
 const PROGRAM_DATA_PREFIX: &str = "Program data: ";
@@ -18,6 +18,11 @@ const MAX_SYMBOL_BYTES: usize = 64;
 const MAX_URI_BYTES: usize = 4_096;
 const MAX_INSTRUCTION_NAME_BYTES: usize = 96;
 const MAX_SHAREHOLDERS: usize = 64;
+
+/// PumpSwap `DepositEvent` discriminator from the pinned public IDL revision.
+pub const PUMP_SWAP_DEPOSIT_EVENT_DISCRIMINATOR: [u8; 8] = [120, 248, 61, 83, 31, 142, 107, 144];
+/// PumpSwap `WithdrawEvent` discriminator from the pinned public IDL revision.
+pub const PUMP_SWAP_WITHDRAW_EVENT_DISCRIMINATOR: [u8; 8] = [22, 9, 133, 26, 160, 44, 71, 192];
 
 #[derive(Debug, Error)]
 pub enum DecodeError {
@@ -128,6 +133,12 @@ pub fn decode_anchor_event(
         }
         (PumpProgram::PumpSwap, PUMP_SWAP_SELL_EVENT_DISCRIMINATOR) => {
             PumpEvent::PumpSwapSell(decode_pump_swap_sell(&mut reader)?)
+        }
+        (PumpProgram::PumpSwap, PUMP_SWAP_DEPOSIT_EVENT_DISCRIMINATOR) => {
+            PumpEvent::PumpSwapDeposit(decode_pump_swap_deposit(&mut reader)?)
+        }
+        (PumpProgram::PumpSwap, PUMP_SWAP_WITHDRAW_EVENT_DISCRIMINATOR) => {
+            PumpEvent::PumpSwapWithdraw(decode_pump_swap_withdraw(&mut reader)?)
         }
         _ => {
             return Err(DecodeError::UnknownDiscriminator {
@@ -426,6 +437,52 @@ fn decode_pump_swap_sell(reader: &mut BorshReader<'_>) -> Result<PumpSwapSellEve
         virtual_quote_reserves: reader.i128("virtual_quote_reserves")?,
         can_boost: reader.boolean("can_boost")?,
         base_supply: reader.u64("base_supply")?,
+    })
+}
+
+fn decode_pump_swap_deposit(
+    reader: &mut BorshReader<'_>,
+) -> Result<PumpSwapDepositEvent, DecodeError> {
+    Ok(PumpSwapDepositEvent {
+        timestamp: reader.i64("timestamp")?,
+        lp_token_amount_out: reader.u64("lp_token_amount_out")?,
+        max_base_amount_in: reader.u64("max_base_amount_in")?,
+        max_quote_amount_in: reader.u64("max_quote_amount_in")?,
+        user_base_token_reserves: reader.u64("user_base_token_reserves")?,
+        user_quote_token_reserves: reader.u64("user_quote_token_reserves")?,
+        pool_base_token_reserves: reader.u64("pool_base_token_reserves")?,
+        pool_quote_token_reserves: reader.u64("pool_quote_token_reserves")?,
+        base_amount_in: reader.u64("base_amount_in")?,
+        quote_amount_in: reader.u64("quote_amount_in")?,
+        lp_mint_supply: reader.u64("lp_mint_supply")?,
+        pool: reader.pubkey("pool")?,
+        user: reader.pubkey("user")?,
+        user_base_token_account: reader.pubkey("user_base_token_account")?,
+        user_quote_token_account: reader.pubkey("user_quote_token_account")?,
+        user_pool_token_account: reader.pubkey("user_pool_token_account")?,
+    })
+}
+
+fn decode_pump_swap_withdraw(
+    reader: &mut BorshReader<'_>,
+) -> Result<PumpSwapWithdrawEvent, DecodeError> {
+    Ok(PumpSwapWithdrawEvent {
+        timestamp: reader.i64("timestamp")?,
+        lp_token_amount_in: reader.u64("lp_token_amount_in")?,
+        min_base_amount_out: reader.u64("min_base_amount_out")?,
+        min_quote_amount_out: reader.u64("min_quote_amount_out")?,
+        user_base_token_reserves: reader.u64("user_base_token_reserves")?,
+        user_quote_token_reserves: reader.u64("user_quote_token_reserves")?,
+        pool_base_token_reserves: reader.u64("pool_base_token_reserves")?,
+        pool_quote_token_reserves: reader.u64("pool_quote_token_reserves")?,
+        base_amount_out: reader.u64("base_amount_out")?,
+        quote_amount_out: reader.u64("quote_amount_out")?,
+        lp_mint_supply: reader.u64("lp_mint_supply")?,
+        pool: reader.pubkey("pool")?,
+        user: reader.pubkey("user")?,
+        user_base_token_account: reader.pubkey("user_base_token_account")?,
+        user_quote_token_account: reader.pubkey("user_quote_token_account")?,
+        user_pool_token_account: reader.pubkey("user_pool_token_account")?,
     })
 }
 
