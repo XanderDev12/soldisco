@@ -28,3 +28,5 @@ work/
 *.pfx
 *.secret.json
 *-keypair.json
+.secrets/
+secrets/

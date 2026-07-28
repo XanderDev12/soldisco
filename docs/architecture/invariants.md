@@ -6,6 +6,11 @@ deployment topology.
 ## Authority and safety
 
 - Deterministic checks and execution policies are authoritative.
+- `OBSERVED` means only that supported evidence decoded and normalized
+  structurally; it is never a safety pass, approval, recommendation, or trade
+  signal.
+- `OBSERVE_ALL` may expose pre-screening candidates for pipeline validation, but
+  it cannot manufacture thresholds, decisions, or scores that have not run.
 - AI output is advisory and cannot approve a token, change deterministic risk,
   create user intent, sign, or submit a transaction.
 - A strategy match is evidence, not execution authority.
@@ -28,26 +33,38 @@ deployment topology.
 - Absence of a Raydium market is unavailable evidence, not an automatic
   rejection unless an identified, versioned rule requires it.
 - Rejected candidates, source outages, missing data, and corrections are
-  retained to prevent survivorship bias.
+  represented for the duration required by their explicit retention policy;
+  replay must disclose evidence that has aged out.
 
 ## Durability and recovery
 
 - PostgreSQL is the initial durable system of record and is accessed only
   through the Rust persistence boundary.
+- Each database is immutably bound to one configured Solana network before
+  ingestion; HTTP genesis identity is pinned and verified before the first
+  binding, and switching networks requires a separate database.
 - An observation and its durable work state are committed before downstream
   in-process dispatch.
 - Bounded Tokio channels provide backpressure but are ephemeral and never the
   only copy of unfinished work.
 - Live WebSocket delivery is not presumed complete. HTTP RPC recovery resumes
   from persisted checkpoints and shares identity rules with live intake.
+- Recovery that cannot reach its durable checkpoint records a retained,
+  explicit collection gap and reports degraded health rather than implying
+  completeness.
+- Attributable malformed source evidence is quarantined and never admitted as
+  an `OBSERVED` candidate.
+- A handled transaction advances its checkpoint only after every attributable
+  fact has a durable observation or quarantine disposition.
 - Workers and projections are idempotent and rebuildable from durable facts.
 - Retention is explicit and versioned. It cannot make missing replay evidence
   appear complete.
 
 ## Reproducibility
 
-- Raw observations are append-only. Corrections are new facts, not silent
-  mutations.
+- Retained raw observations are never mutated in place. Corrections are new
+  linked facts, while explicit retention may delete whole eligible terminal
+  rows.
 - Feature, wallet-score, cluster, model, strategy, and policy versions are
   immutable once referenced by an evaluation.
 - A replay uses only information observable at the simulated point in time.

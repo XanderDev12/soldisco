@@ -7,36 +7,48 @@ type DiscoveryCountersProps = {
 export function DiscoveryCounters({
   summary,
 }: DiscoveryCountersProps) {
+  const feedCounter =
+    summary.mode === "OBSERVE_ALL"
+      ? {
+          label: "Observed",
+          value:
+            summary.observed === null ? "—" : String(summary.observed),
+          tone: "observed",
+        }
+      : {
+          label: "Approved",
+          value:
+            summary.approved === null ? "—" : String(summary.approved),
+          tone: "approved",
+        };
   const counters = [
+    feedCounter,
     {
-      label: "Pending",
-      value: String(summary.pending),
+      label: "Queued facts",
+      value:
+        summary.pending === null ? "—" : String(summary.pending),
       tone: "pending",
     },
     {
-      label: "Approved",
-      value: String(summary.approved),
-      tone: "approved",
-    },
-    {
       label: "Rejected",
-      value: String(summary.rejected),
+      value:
+        summary.rejected === null ? "—" : String(summary.rejected),
       tone: "rejected",
     },
     {
-      label: "Flow rate",
+      label: "Processed rate",
       value:
         summary.ratePerMinute === null
           ? "— / min"
           : `${summary.ratePerMinute} / min`,
       tone: "rate",
     },
-  ] as const;
+  ];
 
   return (
     <dl
       className="discovery-counters"
-      aria-label="Discovery screening status"
+      aria-label="Discovery collection status"
     >
       {counters.map((counter) => (
         <div

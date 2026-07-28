@@ -20,9 +20,21 @@ pub enum SourceProgram {
     RaydiumAmmV4,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TradeSide {
+    Buy,
+    Sell,
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct ChainCoordinate {
     pub slot: u64,
+    /// Optional provider-supplied ordinal within a slot. Solana's standard RPC
+    /// responses do not guarantee this value, so recovery must remain safe
+    /// when it is absent.
+    #[serde(default)]
+    pub transaction_index: Option<u64>,
     pub signature: String,
     pub instruction_index: u16,
     pub event_index: u16,
@@ -46,6 +58,50 @@ pub struct NormalizedObservation {
     pub source_event_time_unix_ms: Option<i64>,
     pub received_time_unix_ms: i64,
     pub raw_evidence_hash: String,
+    /// Compact base64 evidence sufficient to reproduce or audit the decode
+    /// without retaining an entire RPC transaction response.
+    #[serde(default)]
+    pub source_evidence_base64: String,
+    pub payload: ObservationPayload,
+}
+
+/// Source-neutral facts needed by discovery and later screening. The source
+/// decoder may expose additional protocol fields, but only these typed facts
+/// cross the durable domain boundary.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ObservationPayload {
+    TokenCreated {
+        name: String,
+        symbol: String,
+        uri: String,
+        creator: String,
+        user: String,
+    },
+    MarketCreated {
+        creator: String,
+        base_amount_units: u64,
+        quote_amount_units: u64,
+    },
+    Trade {
+        side: TradeSide,
+        wallet: String,
+        base_amount_units: u64,
+        quote_amount_units: u64,
+        base_reserve_units: Option<u64>,
+        quote_reserve_units: Option<u64>,
+    },
+    MarketCompleted {
+        user: String,
+    },
+    MarketMigrated {
+        user: String,
+        destination_market: String,
+        base_amount_units: u64,
+        /// Pump's legacy migration event names this amount as SOL. It must not
+        /// be generalized to the active market's canonical quote units.
+        legacy_sol_amount_units: u64,
+    },
 }
 
 #[cfg(test)]
@@ -62,6 +118,7 @@ mod tests {
             program: SourceProgram::Pump,
             coordinate: ChainCoordinate {
                 slot: 42,
+                transaction_index: Some(3),
                 signature: "signature".to_owned(),
                 instruction_index: 1,
                 event_index,

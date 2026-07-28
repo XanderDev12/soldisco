@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "SolDisco — Solana Discovery Console",
   description:
-    "A stream-first workspace for reviewing, scoring, and monitoring Solana tokens.",
+    "A local stream-first workspace for observing decoded Solana token activity.",
 };
 
 export default function RootLayout({

@@ -13,12 +13,13 @@ export function PositionTab({
   onViewTrade,
 }: PositionTabProps) {
   const presentation = executionModePresentation[mode].inspectorPosition;
+  const tokenLabel = token.symbol ?? token.name ?? token.mint;
 
   return (
     <div className="empty-position">
       <span className="empty-position__icon">◎</span>
       <h3>{presentation.emptyTitle}</h3>
-      <p>{presentation.emptyDetail(token.symbol)}</p>
+      <p>{presentation.emptyDetail(tokenLabel)}</p>
       <button type="button" onClick={onViewTrade}>
         {presentation.action}
       </button>

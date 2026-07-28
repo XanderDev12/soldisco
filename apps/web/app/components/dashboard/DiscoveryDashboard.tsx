@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { BackendStatusNotice } from "./BackendStatusNotice";
 import { DashboardTopbar } from "./DashboardTopbar";
 import { Sidebar } from "./Sidebar";
 import { StrategyUploadModal } from "./StrategyUploadModal";
@@ -9,25 +10,25 @@ import type {
   DashboardView,
   ExecutionMode,
   InspectorTab,
-  RejectionLogEntry,
   ScreeningSummary,
-  Token,
   TradeSide,
 } from "./types";
+import { useDiscoveryBackend } from "./useDiscoveryBackend";
 import {
   defaultLayout,
   layoutLimits,
   useDashboardLayout,
 } from "./useDashboardLayout";
+import { useCompactNavigation } from "./useCompactNavigation";
 import { WalletUnavailableToast } from "./WalletUnavailableToast";
 import { DashboardSectionView } from "./views/DashboardSectionView";
 
-const approvedTokens: Token[] = [];
-const rejectionLog: RejectionLogEntry[] = [];
-const screeningSummary: ScreeningSummary = {
-  pending: 0,
-  approved: approvedTokens.length,
-  rejected: rejectionLog.length,
+const unloadedSummary: ScreeningSummary = {
+  mode: "OBSERVE_ALL",
+  observed: null,
+  pending: null,
+  approved: null,
+  rejected: null,
   ratePerMinute: null,
 };
 
@@ -44,10 +45,7 @@ const initialTradeDrafts: Record<ExecutionMode, TradeDraft> = {
 export function DiscoveryDashboard() {
   const [activeView, setActiveView] =
     useState<DashboardView>("discovery");
-  const [streamRunning, setStreamRunning] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(
-    approvedTokens[0]?.id ?? null,
-  );
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mode, setMode] = useState<ExecutionMode>("Paper");
   const [inspectorTab, setInspectorTab] =
     useState<InspectorTab>("Overview");
@@ -56,6 +54,14 @@ export function DiscoveryDashboard() {
   const [walletMessage, setWalletMessage] = useState(false);
   const [tradeDrafts, setTradeDrafts] =
     useState(initialTradeDrafts);
+  const mobileMenuButtonRef = useRef<HTMLButtonElement>(null);
+  const compactNavigation = useCompactNavigation();
+  const {
+    backend,
+    discovery,
+    discoveryStale,
+    toggleStream,
+  } = useDiscoveryBackend();
   const {
     activeResize,
     beginResize,
@@ -65,8 +71,11 @@ export function DiscoveryDashboard() {
     setLayoutValue,
   } = useDashboardLayout();
 
+  const tokens = discovery?.tokens ?? [];
   const selectedToken =
-    approvedTokens.find((token) => token.id === selectedId) ?? null;
+    tokens.find((token) => token.id === selectedId) ??
+    tokens[0] ??
+    null;
   const tradeDraft = tradeDrafts[mode];
 
   function openView(view: DashboardView) {
@@ -74,6 +83,20 @@ export function DiscoveryDashboard() {
     setSideNavOpen(false);
     window.requestAnimationFrame(() => {
       document.getElementById("view-title")?.focus();
+    });
+  }
+
+  function openMobileNavigation() {
+    setSideNavOpen(true);
+    window.requestAnimationFrame(() => {
+      document.getElementById(`nav-${activeView}`)?.focus();
+    });
+  }
+
+  function closeMobileNavigation() {
+    setSideNavOpen(false);
+    window.requestAnimationFrame(() => {
+      mobileMenuButtonRef.current?.focus();
     });
   }
 
@@ -85,10 +108,6 @@ export function DiscoveryDashboard() {
   function showWalletUnavailable() {
     setWalletMessage(true);
     window.setTimeout(() => setWalletMessage(false), 2600);
-  }
-
-  function toggleStream() {
-    setStreamRunning((running) => !running);
   }
 
   function changeMode(nextMode: ExecutionMode) {
@@ -118,13 +137,14 @@ export function DiscoveryDashboard() {
     >
       <Sidebar
         activeView={activeView}
-        streamRunning={streamRunning}
+        backend={backend}
+        compact={compactNavigation}
         sideNavOpen={sideNavOpen}
         layout={layout}
         layoutLimits={layoutLimits}
         defaultLayout={defaultLayout}
         onOpenView={openView}
-        onCloseMobileNav={() => setSideNavOpen(false)}
+        onCloseMobileNav={closeMobileNavigation}
         onBeginResize={beginResize}
         onResizeKey={handleResizeKey}
         onSetLayoutValue={setLayoutValue}
@@ -133,22 +153,27 @@ export function DiscoveryDashboard() {
       <section className="workspace">
         <DashboardTopbar
           sideNavOpen={sideNavOpen}
-          streamRunning={streamRunning}
+          mobileMenuButtonRef={mobileMenuButtonRef}
+          stream={backend.stream}
           mode={mode}
-          onOpenMobileNav={() => setSideNavOpen(true)}
-          onToggleStream={toggleStream}
+          onOpenMobileNav={openMobileNavigation}
+          onToggleStream={() => void toggleStream()}
           onUpload={() => setUploadOpen(true)}
           onModeChange={changeMode}
           onWallet={showWalletUnavailable}
         />
+        <BackendStatusNotice backend={backend} />
 
         {activeView === "discovery" ? (
           <TokenStreamView
-            approvedTokens={approvedTokens}
-            screeningSummary={screeningSummary}
-            rejectionLog={rejectionLog}
+            tokens={tokens}
+            tokensTotal={discovery?.tokensTotal ?? 0}
+            tokensTruncated={discovery?.tokensTruncated ?? false}
+            dataStale={discoveryStale}
+            screeningSummary={discovery?.summary ?? unloadedSummary}
+            rejectionLog={discovery?.rejectionReasons ?? []}
             selectedToken={selectedToken}
-            streamRunning={streamRunning}
+            backend={backend}
             onSelectToken={selectToken}
             onOpenControls={() => openView("controls")}
             inspectorSize={layout.inspector}
@@ -175,9 +200,9 @@ export function DiscoveryDashboard() {
         ) : (
           <DashboardSectionView
             view={activeView}
-            streamRunning={streamRunning}
+            backend={backend}
             mode={mode}
-            onToggleStream={toggleStream}
+            onToggleStream={() => void toggleStream()}
             onModeChange={changeMode}
             onWallet={showWalletUnavailable}
             onUpload={() => setUploadOpen(true)}

@@ -1,23 +1,4 @@
-import type { MatchLevel, TokenStatus } from "./types";
-
-export function Sparkline({
-  values,
-  positive,
-}: {
-  values: number[];
-  positive: boolean;
-}) {
-  return (
-    <span
-      className={`sparkline ${positive ? "sparkline--positive" : "sparkline--negative"}`}
-      aria-label={positive ? "Upward momentum" : "Downward momentum"}
-    >
-      {values.map((value, index) => (
-        <i key={index} style={{ height: `${Math.max(14, value)}%` }} />
-      ))}
-    </span>
-  );
-}
+import type { TokenStatus } from "./types";
 
 export function StatusBadge({ status }: { status: TokenStatus }) {
   return (
@@ -38,11 +19,5 @@ export function RiskBadge({ value }: { value: number }) {
       </span>
       {value}
     </span>
-  );
-}
-
-export function MatchBadge({ match }: { match: MatchLevel }) {
-  return (
-    <span className={`match match--${match.toLowerCase()}`}>{match}</span>
   );
 }

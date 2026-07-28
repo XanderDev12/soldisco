@@ -24,8 +24,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let database = Database::connect(&config.database_url, config.database_max_connections).await?;
     database.migrate().await?;
+    if database.bound_network().await?.is_some() {
+        database.bind_network(config.solana_network).await?;
+    }
+    database.rebuild_discovery_projection().await?;
 
-    let state = AppState::new(database).await?;
+    let state = AppState::new(database, &config).await?;
     let app = http::router::build(state.clone(), &config)?;
     let listener = tokio::net::TcpListener::bind(config.api_address).await?;
 

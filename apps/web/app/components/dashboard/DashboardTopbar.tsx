@@ -1,8 +1,12 @@
+import type { RefObject } from "react";
+import type { StreamControlViewModel } from "../../lib/soldisco-api/viewModels";
+import { ExecutionModeSwitch } from "./ExecutionModeSwitch";
 import type { ExecutionMode } from "./types";
 
 export interface DashboardTopbarProps {
   sideNavOpen: boolean;
-  streamRunning: boolean;
+  mobileMenuButtonRef: RefObject<HTMLButtonElement | null>;
+  stream: StreamControlViewModel;
   mode: ExecutionMode;
   onOpenMobileNav: () => void;
   onToggleStream: () => void;
@@ -13,7 +17,8 @@ export interface DashboardTopbarProps {
 
 export function DashboardTopbar({
   sideNavOpen,
-  streamRunning,
+  mobileMenuButtonRef,
+  stream,
   mode,
   onOpenMobileNav,
   onToggleStream,
@@ -25,6 +30,7 @@ export function DashboardTopbar({
     <>
       <header className="topbar">
         <button
+          ref={mobileMenuButtonRef}
           type="button"
           className="mobile-menu"
           onClick={onOpenMobileNav}
@@ -46,35 +52,33 @@ export function DashboardTopbar({
         <div className="topbar__actions">
           <button
             type="button"
-            className={`stream-toggle ${streamRunning ? "stream-toggle--stop" : ""}`}
+            className={`stream-toggle ${stream.shouldStop ? "stream-toggle--stop" : ""}`}
             onClick={onToggleStream}
             aria-describedby="stream-status"
+            disabled={!stream.canCommand}
           >
-            <span aria-hidden="true">{streamRunning ? "■" : "▶"}</span>
-            {streamRunning ? "Stop stream" : "Start stream"}
+            <span aria-hidden="true">{stream.shouldStop ? "■" : "▶"}</span>
+            {stream.buttonLabel}
           </button>
           <span id="stream-status" className="sr-only" aria-live="polite">
-            {streamRunning
-              ? "Stream active. Waiting for a discovery source."
-              : "Stream stopped."}
+            Stream {stream.statusLabel.toLowerCase()}.
+            {stream.requestedRunning ? " Running requested." : ""}
           </span>
-          <button type="button" className="upload-button" onClick={onUpload}>
+          <button
+            type="button"
+            className="upload-button"
+            onClick={onUpload}
+            aria-haspopup="dialog"
+            aria-controls="strategy-upload-dialog"
+          >
             <span>＋</span>
             Upload strategy
           </button>
 
-          <div className="mode-switch" aria-label="Execution mode">
-            {(["Paper", "Live"] as const).map((item) => (
-              <button
-                type="button"
-                key={item}
-                className={mode === item ? "is-active" : ""}
-                onClick={() => onModeChange(item)}
-              >
-                {item}
-              </button>
-            ))}
-          </div>
+          <ExecutionModeSwitch
+            mode={mode}
+            onModeChange={onModeChange}
+          />
 
           {mode === "Live" && (
             <button type="button" className="wallet-button" onClick={onWallet}>

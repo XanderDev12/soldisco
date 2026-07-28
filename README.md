@@ -2,10 +2,10 @@
 
 Soldisco is a local-first Solana token discovery and strategy-research
 workspace. The existing React/TypeScript interface remains the browser layer.
-A single Rust application will collect Pump and PumpSwap activity directly from
-Solana, enrich eligible mints with exact Raydium venue data when available, run
-deterministic checks, persist the evidence in local PostgreSQL, and publish
-read-only projections to the interface.
+A single Rust application now collects Pump and PumpSwap activity directly
+from Solana, persists normalized evidence in local PostgreSQL, and publishes a
+read-only discovery projection to the interface. Deterministic screening,
+Raydium enrichment, strategies, AI analysis, and trading are later milestones.
 
 ## Selected local topology
 
@@ -18,30 +18,48 @@ localhost:3000 --HTTP/SSE-> 127.0.0.1:8080 --SQLx only----> 127.0.0.1:5432
 
 There is no cloud backend in the current plan. The separately hosted Sites
 build is a UI preview and remains disconnected from this local runtime. The
-diagram is the selected local target; the current web interface remains
-disconnected from the implemented Rust/PostgreSQL foundation until the UI
-integration milestone.
+local React app is connected to the Rust API.
 
-## Planned product flow
+## Implemented local vertical slice
 
-1. The collector subscribes to Pump and PumpSwap program activity and recovers
-   missed chain history after interruptions.
-2. Relevant chain observations are normalized, written to PostgreSQL, and only
-   then dispatched to in-process workers.
-3. The discovery engine maintains rolling trades, volume, unique-wallet,
-   momentum, curve, and migration measurements.
-4. Cheap qualification removes irrelevant activity before deeper RPC work.
-5. The deterministic risk engine records explainable `PASS`, `REJECT`, or
-   `UNKNOWN` results with evidence and freshness.
-6. When a candidate has a Raydium market, a post-Pump enrichment layer resolves
-   the exact CPMM, CLMM, or AMM v4 pool and evaluates that venue independently.
-7. Approved candidates enter time-bounded monitoring windows and appear in the
-   Discovery projection; rejected activity updates counters and reason logs.
-8. Versioned market, wallet, and cluster snapshots later feed enabled
-   strategies. Paper and live execution remain separate later milestones.
+1. The UI starts or stops the supervised stream through locally guarded HTTP.
+2. Start verifies the HTTP RPC's pinned Solana genesis identity before the
+   database is bound or Pump/PumpSwap PubSub intake opens.
+3. Every success or failure notification triggers bounded-concurrent
+   authoritative HTTP retrieval; signature, exact slot, and status must match,
+   while output remains in source order. The strict, IDL-derived decoder reads
+   program-data logs and supported Anchor CPI event instructions with exact
+   transaction coordinates and compact source evidence.
+4. Normalized observations and durable work are committed to PostgreSQL before
+   downstream processing. Chain identity deduplicates live and recovered data,
+   and the database is immutably bound to the configured Solana network before
+   ingestion.
+5. Persisted checkpoints drive bounded HTTP recovery after reconnects or
+   restarts. If a checkpoint is outside that bound, the server records an
+   explicit collection gap and resumes live in `DEGRADED` state.
+6. The discovery worker projects structurally valid candidates and their
+   venue-scoped activity. HTTP supplies bounded authoritative snapshots with
+   explicit truncation metadata; coalesced named `soldisco` SSE events tell the
+   browser when to refresh them.
+7. Attributable malformed or unresolved-market evidence enters bounded
+   quarantine before checkpoint progress. Maintenance prunes eligible terminal
+   raw history in bounded batches, while storage-limit and network-identity
+   failures enter terminal `ERROR`.
 
-Raydium is an additional venue-evidence layer, not a replacement for Pump
-intake and not an excuse to combine liquidity or price across unrelated pools.
+The current projection deliberately runs in `OBSERVE_ALL` mode. Every
+structurally valid decoded Pump or PumpSwap candidate can appear as `OBSERVED`;
+there are no pass thresholds, approvals, rejections, risk scores, or
+opportunity scores yet. Unsupported data is ignored and attributable malformed
+evidence is quarantined; neither is treated as a candidate. This makes the
+connected pipeline observable without pretending that the future safety gate
+exists.
+
+This local milestone also has an explicit operating boundary: the 5 GiB
+database guard is not a whole-machine free-space/WAL monitor, and durable
+market/discovery aggregates are not yet archived. Keep disk headroom available
+and do not treat unfiltered `OBSERVE_ALL` collection as an unattended,
+indefinite deployment until the bounded active-market lifecycle in the next
+milestone is implemented.
 
 ## Workspace direction
 
@@ -49,69 +67,73 @@ intake and not an excuse to combine liquidity or price across unrelated pools.
 - `apps/server` — one Rust executable containing HTTP and background-job
   orchestration
 - `crates/domain` — provider-independent domain facts and state transitions
-- `crates/source-pump` — Pump and PumpSwap event decoding
+- `crates/source-pump` — strict Pump and PumpSwap event decoding
 - `crates/source-raydium` — optional post-Pump Raydium venue resolution and
   decoding
 - `crates/solana-rpc` — provider-neutral Solana HTTP, PubSub, recovery, and
   health behavior
-- `crates/discovery-engine` — rolling metrics and cheap qualification
+- `crates/discovery-engine` — future rolling metrics and cheap qualification
 - `crates/risk-engine` — deterministic evidence, rules, and scoring
 - `crates/persistence` — the only SQLx and PostgreSQL implementation boundary
-- `crates/projections` — approved feed, counters, rejection log, and inspector
-  read models
+- `crates/projections` — rebuildable browser read-model boundary
 - `crates/api-contracts` — Rust-owned browser response and event shapes
 - `docs` — product, architecture, configuration, and milestone decisions
 
-These crates compile into one server binary. Background workers are bounded
-Tokio tasks inside that process, not microservices. Their channels are
-ephemeral performance tools; PostgreSQL is the durable handoff and recovery
-source. The database commit happens before an event is published to a worker or
-the UI.
+These crates compile into one server binary. Background workers are supervised
+Tokio tasks inside that process, not microservices. Their queues and signals
+are ephemeral performance tools; PostgreSQL is the durable handoff and recovery
+source. The database commit happens before downstream work or UI publication.
 
-Future strategy, portfolio, paper-trading, and execution crates will be added
-only when their milestones begin. Execution remains separately isolated because
-it has materially different security and authorization consequences. No
-collector, risk, strategy, AI, projection, or portfolio component may sign or
-submit transactions.
+Raydium remains a planned post-Pump venue-evidence layer, not a replacement for
+Pump intake and not an excuse to combine liquidity or price across unrelated
+pools. Future risk, strategy, AI, portfolio, paper-trading, and execution work
+will be added only when those milestones begin. Execution remains separately
+isolated because it has materially different security and authorization
+consequences. No collector, risk, strategy, AI, projection, or portfolio
+component may sign or submit transactions.
 
 ## Current scope
 
-The discovery console is in place. It includes an approved-only feed,
-screening counters, a compact rejection log, accessible workspace views,
-session-local stream controls, strategy controls, token inspection, trading
-surfaces, position monitoring, and adjustable workspace regions. Paper views
-have no wallet dependency; wallet controls belong only to Live mode.
+The discovery console is wired to authoritative local stream state, discovery
+snapshots, token inspection, start/stop commands, and named SSE notifications.
+The current feed shows only real `OBSERVED` candidates decoded by the backend;
+it does not synthesize data or manufacture unavailable risk and rating values.
+The remaining workspace views are UI shells for later milestones. Paper views
+have no wallet dependency; wallet controls belong only to future Live mode.
 
-The UI currently contains no authoritative token or position data. The Rust
-workspace, local PostgreSQL migration, health/snapshot routes, honest
-not-yet-available Start response, and notification-only SSE boundary are now in
-place. Direct on-chain collection, deterministic screening, frontend API
-integration, wallet connections, quotes, purchases, sales, and position
-reconciliation remain implementation work.
+Rolling-window qualification, deterministic scam/rug screening, approval and
+rejection projections, Raydium enrichment, strategy configuration, wallet
+connections, quotes, purchases, sales, and position reconciliation are not
+implemented.
 
 ## Run locally
 
-Install Docker Desktop (or provide PostgreSQL 17 yourself), then create the one
-uncommitted local environment file:
+Provide PostgreSQL 17 locally, either with the optional Compose setup or a
+native installation, then create the one uncommitted local environment file:
 
 ```bash
 cp .env.example .env
 ```
 
 Replace both fake password values in `.env` with the same local-only password.
-Start the database once, then run the server and web commands in separate
-terminals from the repository root:
+Start the database once. Use `npm run db:up` only for the optional Compose
+database; otherwise start the native PostgreSQL service. Then run the server
+and web commands in separate terminals from the repository root:
 
 ```bash
-npm run db:up
 npm run dev:server
 npm run dev:web
 ```
 
 The three processes bind only to `127.0.0.1:5432`,
-`127.0.0.1:8080`, and `localhost:3000` by default. The current web app remains
-disconnected until the UI integration milestone, so the browser still shows
-honest empty trackers.
+`127.0.0.1:8080`, and `localhost:3000` by default. Open
+`http://localhost:3000`, then use Start Stream to begin collection.
+
+The committed example uses Solana's public mainnet endpoints so initial setup
+does not require a paid provider. Public endpoints may rate-limit or restrict
+high-volume subscriptions; configure dedicated HTTP and WebSocket RPC URLs for
+sustained mainnet collection. RPC credentials belong only in the ignored local
+`.env`.
 
 The repository pins Node.js in `.nvmrc` because the frontend still uses Node.
 With `nvm` installed, run `nvm use` before installing frontend dependencies.
@@ -119,8 +141,12 @@ The Rust toolchain is pinned by `rust-toolchain.toml`; Cargo installs it through
 rustup on first use.
 
 Run root-level `npm run verify` before syncing every substantial feature. It
-formats, lints, type-checks, tests, builds, and audits the implemented web and
-Rust workspaces.
+checks Rust formatting, lints, type-checks, tests, and production-builds the
+implemented web and Rust workspaces, then audits production frontend
+dependencies. The web test command owns its one production build, so
+verification does not build it twice. GitHub CI also supplies disposable
+PostgreSQL so the migration/persistence integration test runs on every pull
+request.
 
 See the [documentation index](docs/README.md), [backend stack
 decision](docs/architecture/backend-stack.md), [architecture

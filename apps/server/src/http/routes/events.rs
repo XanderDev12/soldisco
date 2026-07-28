@@ -41,6 +41,6 @@ fn event_from(envelope: soldisco_api_contracts::LiveEnvelope) -> Event {
         .unwrap_or_else(|_| {
             Event::default()
                 .event("soldisco")
-                .data(r#"{"event":{"type":"RESYNC_REQUIRED"}}"#)
+                .data(r#"{"sequence":0,"event":{"type":"RESYNC_REQUIRED"}}"#)
         })
 }
