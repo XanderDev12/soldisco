@@ -1,13 +1,14 @@
-# Wallet-Conditioned Momentum
+# Wallet-Conditioned Momentum (deferred scaffold)
 
-Inactive definition for the first strategy. Trusted-wallet discovery is
-intentionally out of scope, so this strategy returns `NOT_EVALUABLE` and cannot
-emit trade instructions until its required dataset is configured.
+This is the first planned strategy, but its current TypeScript definition is
+reference scaffolding. Trusted-wallet discovery is intentionally out of scope,
+so it remains `NOT_EVALUABLE` and cannot emit trade proposals until the required
+dataset is configured.
 
-Its manifest and evaluator are draft scaffolding, not a validated live
-strategy. Before activation they must consume immutable market and wallet
-snapshots, carry evaluation identity, pass deterministic replay, and satisfy the
-shared declarative schema.
+The eventual evaluator belongs in the Rust strategy engine. Before activation
+it must consume immutable Pump/PumpSwap market snapshots, applicable Raydium
+venue evidence, and wallet snapshots; carry evaluation identity; pass
+deterministic replay; and satisfy the shared declarative schema.
 
 See the full [strategy design](../../../docs/strategies/wallet-conditioned-momentum.md)
 and [wallet-intelligence model](../../../docs/data/wallet-intelligence.md).

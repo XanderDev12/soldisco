@@ -1,10 +1,9 @@
-# Domain
+# Domain (superseded TypeScript scaffold)
 
-Shared vocabulary for Solana token discovery. Deterministic approval, risk, rating,
-AI commentary, and strategy results are separate fields so none can silently
-override another.
+This package contains the earlier TypeScript domain sketch. Backend vocabulary,
+invariants, and state transitions now belong in `crates/domain`.
 
-`PipelineStage` currently supports the disconnected UI contract. Before live
-data, it will become a derived projection over independent discovery,
-enrichment, feature, AI, strategy, and candidate-window states rather than an
-authoritative workflow state.
+The TypeScript source remains temporarily for reference and typechecking.
+Deterministic approval, risk, opportunity rating, AI commentary, and strategy
+results remain separate concepts, but new backend definitions must not be added
+here.

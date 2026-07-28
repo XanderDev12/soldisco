@@ -1,0 +1,16 @@
+[package]
+name = "soldisco-projections"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+soldisco-api-contracts = { path = "../api-contracts" }
+
+[dev-dependencies]
+soldisco-domain = { path = "../domain" }
+
+[lints]
+workspace = true

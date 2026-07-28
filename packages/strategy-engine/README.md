@@ -1,8 +1,10 @@
-# Strategy engine
+# Strategy engine (deferred TypeScript scaffold)
 
-Pure evaluation boundaries. Results express matches, non-matches, missing
-dependencies, and errors; they never create trade intents or orders.
+This package records the earlier TypeScript evaluator shape. Strategy execution
+is deferred until the Pump/PumpSwap collector, optional Raydium enrichment,
+deterministic screening, replay, and monitoring foundations are reliable.
 
-The generic feature maps are temporary scaffolding. Persisted evaluations will
-have immutable evaluation IDs and reference versioned feature snapshots so
-replays can reconstruct exactly what each strategy knew.
+Its future implementation belongs in a Rust `crates/strategy-engine` crate and
+will compile into the same server binary initially. Evaluations must reference
+immutable, versioned feature snapshots and can emit matches or proposals, never
+orders. Do not add new backend implementation here.

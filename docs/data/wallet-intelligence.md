@@ -3,6 +3,11 @@
 Wallet-conditioned strategies require historical, versioned evidence rather
 than a permanent `trusted` boolean.
 
+Wallet intelligence is not part of the initial Pump/PumpSwap collector or
+deterministic first pass. The collector may preserve wallet addresses that are
+already present in relevant chain events, but it does not label those wallets
+as trusted.
+
 ## Planned records
 
 - observed wallet trade
@@ -37,5 +42,15 @@ false relationships. Strategy features distinguish independent qualifying
 clusters from related-wallet volume.
 
 Wallet lists, labels, graph databases, and clustering algorithms are not part
-of the initial Axiom and RPC first pass. They must be designed before enabling
-Wallet-Conditioned Momentum.
+of the initial Pump/PumpSwap, Solana RPC, or Raydium-enrichment first pass. They
+must be designed before enabling Wallet-Conditioned Momentum.
+
+Venue identity remains part of every observed wallet trade. Activity through a
+Pump bonding curve, PumpSwap pool, Raydium CPMM pool, Raydium CLMM pool, or
+Raydium AMM v4 pool cannot be treated as equivalent without a versioned
+feature definition. Wallet scores use only evidence available by their as-of
+slot, regardless of when a later pool or wallet relationship is discovered.
+
+The first implementation stores these records in local PostgreSQL through the
+Rust persistence boundary. Browser state and SSE delivery are not historical
+wallet evidence.

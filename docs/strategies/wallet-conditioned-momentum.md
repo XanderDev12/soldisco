@@ -8,8 +8,8 @@ replayable.
 
 1. activity from a qualifying wallet or time-versioned cluster opens a
    candidate window
-2. deterministic market observations measure whether independent demand and
-   liquidity confirm the move
+2. deterministic, venue-scoped market observations measure whether independent
+   demand and executable liquidity confirm the move
 3. repeated strategy evaluations reference immutable feature snapshots
 4. an explainable match may create a paper-trade proposal
 5. execution policy independently decides whether the proposal is admissible
@@ -23,12 +23,19 @@ replayable.
 - trade and unique-buyer acceleration
 - buy/sell balance
 - liquidity change and migration state
+- exact Pump curve, PumpSwap pool, or supported Raydium CPMM, CLMM, or AMM v4
+  venue identity
+- cross-venue agreement or divergence calculated from independently preserved
+  pool facts
 - price extension since the triggering wallet entered
 - creator and initial-holder sell flow
 - estimated entry impact, exit impact, transaction costs, and priority fees
 
 Exact thresholds, windows, and exit rules remain research decisions. They must
-not be embedded as unexplained constants in the UI or source adapter.
+not be embedded as unexplained constants in the UI or source decoder. The
+strategy may use Raydium evidence after a Pump candidate is discovered, but an
+absent Raydium pool is not automatically negative unless the strategy manifest
+explicitly requires it.
 
 ## AI relationship
 
@@ -45,5 +52,7 @@ The strategy stays inactive until:
 - every evaluation has an immutable ID and snapshot references
 - source provenance and replay semantics are implemented
 - time-versioned wallet scores and clusters are available
+- venue-specific PumpSwap and optional Raydium observations are not silently
+  merged
 - paper replays include realistic latency, costs, failures, and exits
 - prospective paper results pass predefined acceptance criteria

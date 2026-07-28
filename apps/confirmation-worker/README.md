@@ -1,9 +1,11 @@
-# Confirmation worker
+# Confirmation worker (deferred legacy boundary)
 
-Reserved logical job for observing submitted transaction signatures, tracking
-confirmation state, and emitting normalized execution outcomes.
+This directory is an earlier TypeScript planning marker, not a runnable worker.
+Transaction submission and confirmation are outside the discovery backend.
 
-It will not submit transactions or infer fills from UI state. RPC selection, retry policy, finality requirements, and reconciliation contracts are deferred.
+When live execution is implemented, confirmation will be a supervised Rust job
+that observes submitted signatures, tracks finality, and records normalized
+outcomes. It will not infer fills from UI state.
 
-It begins inside the modular backend process and can be separated only when an
-operational requirement justifies another deployment.
+Because execution is a later isolated security boundary, no implementation
+should be added here.

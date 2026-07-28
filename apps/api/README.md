@@ -1,14 +1,13 @@
-# API
+# API (superseded planning stub)
 
-Logical browser-facing boundary for token streams, token details, strategies,
-replays, and system status.
+This directory is retained temporarily to explain the earlier TypeScript
+layout. It is not a runnable service and is superseded by the Axum HTTP modules
+inside `apps/server`.
 
-The API will expose projections produced elsewhere; it will not own discovery,
-scoring, strategy logic, wallet keys, or transaction signing. Its first
-implementation will provide a read-only stream of normalized source updates.
+The Rust API exposes commands and snapshots through ordinary HTTP and sends
+live discovery projections to the React application through Server-Sent Events
+(SSE). It does not own discovery, risk, strategy logic, wallet keys, or
+transaction signing.
 
-During the research milestones this boundary will be composed into the single
-backend process; this README does not reserve an independently deployed
-service.
-
-Axiom, RPC, persistence, authentication, and execution endpoints are deferred.
+Do not add new implementation here. Browser-facing Rust contracts belong in
+`crates/api-contracts`, and route orchestration belongs in `apps/server`.

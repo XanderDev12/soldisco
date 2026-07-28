@@ -4,6 +4,7 @@ node_modules/
 .open-next/
 dist/
 /build/
+target/
 coverage/
 .turbo/
 .cache/
@@ -14,6 +15,7 @@ coverage/
 
 *.log
 *.tsbuildinfo
+*.rs.bk
 
 playwright-report/
 test-results/

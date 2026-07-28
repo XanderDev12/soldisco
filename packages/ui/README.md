@@ -2,13 +2,15 @@
 
 Framework-neutral view-model shapes for the stream command center, strategy
 workspace, trade ticket, and positions workspace. This package contains no
-wallet or execution implementation.
+wallet, database, collector, or execution implementation. Unlike the other
+legacy TypeScript backend packages, this remains a frontend-only boundary.
 
 The web skeleton still uses a local empty token view model. Live data will
-replace it through an explicit API-to-view projection into this boundary rather
-than exposing backend domain records directly. The Discovery projection
-contains approved rows only; pending and rejected candidates use compact
-screening-summary and rejection-log projections.
+replace it through an explicit mapping from Rust API contracts into this
+boundary rather than exposing backend domain records or PostgreSQL rows
+directly. The Discovery projection contains approved rows only; pending and
+rejected candidates use compact screening-summary and rejection-log
+projections.
 
 Paper and Live tickets are a discriminated union. Paper tickets can be recorded
 without wallet confirmation, while Live tickets retain signing and submission
