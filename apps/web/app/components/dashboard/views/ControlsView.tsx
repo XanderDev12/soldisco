@@ -1,3 +1,4 @@
+import { executionModePresentation } from "../executionModePresentation";
 import type { ExecutionMode } from "../types";
 import { SectionHeader } from "./SectionViewPrimitives";
 
@@ -6,7 +7,6 @@ type ControlsViewProps = {
   mode: ExecutionMode;
   onToggleStream: () => void;
   onModeChange: (mode: ExecutionMode) => void;
-  onResetLayout: () => void;
 };
 
 export function ControlsView({
@@ -14,14 +14,15 @@ export function ControlsView({
   mode,
   onToggleStream,
   onModeChange,
-  onResetLayout,
 }: ControlsViewProps) {
+  const modeDetail = executionModePresentation[mode].controlsDetail;
+
   return (
     <>
       <SectionHeader
         eyebrow="WORKSPACE SETTINGS"
         title="Controls"
-        description="Manage local stream, execution-mode, and layout preferences."
+        description="Manage local stream and execution-mode preferences."
         stats={["STREAM RATE", "FIRST-PASS RATE", "MEDIAN LATENCY"]}
       />
       <div className="section-view__body section-view__grid">
@@ -64,7 +65,7 @@ export function ControlsView({
           <div className="section-card__head">
             <div>
               <h2>Execution mode</h2>
-              <p>Interface review mode</p>
+              <p>{modeDetail}</p>
             </div>
             <span className="status-chip">{mode}</span>
           </div>
@@ -86,20 +87,6 @@ export function ControlsView({
           </div>
         </article>
 
-        <article className="control-card">
-          <div className="section-card__head">
-            <div>
-              <h2>Panel layout</h2>
-              <p>Device-local panel sizing</p>
-            </div>
-            <span className="status-chip">Saved locally</span>
-          </div>
-          <div className="control-card__actions">
-            <button type="button" onClick={onResetLayout}>
-              Reset panel sizes
-            </button>
-          </div>
-        </article>
       </div>
     </>
   );

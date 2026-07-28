@@ -104,20 +104,6 @@ export function Sidebar({
           </div>
         </div>
 
-        <div className="sidebar__footer">
-          <span className="avatar">GD</span>
-          <div>
-            <strong>Local workspace</strong>
-            <span>Development build</span>
-          </div>
-          <button
-            type="button"
-            aria-label="Open controls"
-            onClick={() => onOpenView("controls")}
-          >
-            ···
-          </button>
-        </div>
         <button
           type="button"
           className="resize-handle resize-handle--sidebar"

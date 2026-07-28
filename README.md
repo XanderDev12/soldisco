@@ -43,10 +43,13 @@ submit transactions.
 ## Current scope
 
 The discovery console and typed service-contract foundation are in place. The
-UI includes empty stream filters, deterministic status/risk/rating surfaces,
-accessible views for every workspace destination, session-local stream
-controls, strategy controls, token inspection, guarded buy/sell tickets,
-position monitoring, and persistent adjustable panel sizes.
+UI includes an approved-only discovery feed, screening counters, a compact
+rejection log, deterministic risk/rating surfaces, accessible views for every
+workspace destination, session-local stream controls, strategy controls, token
+inspection, guarded buy/sell tickets, position monitoring, and persistent
+adjustable sidebar and inspector sizes. Paper views use a separate simulated
+ledger presentation with no wallet controls; wallet-dependent actions appear
+only in Live mode.
 
 Axiom ingestion, Solana RPC access, scam/rug checks, persistent event
 infrastructure, wallet connections, quotes, purchases, sales, and position

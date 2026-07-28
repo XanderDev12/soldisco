@@ -1,36 +1,28 @@
-import type { Token, TokenFilter } from "./types";
-import {
-  MatchBadge,
-  RiskBadge,
-  Sparkline,
-  StatusBadge,
-} from "./TokenBadges";
+import { DiscoveryCounters } from "./DiscoveryCounters";
+import { RejectionLog } from "./RejectionLog";
+import { MatchBadge, RiskBadge, Sparkline } from "./TokenBadges";
+import type {
+  RejectionLogEntry,
+  ScreeningSummary,
+  Token,
+} from "./types";
 
 type TokenTableProps = {
-  tokens: Token[];
-  visibleTokens: Token[];
+  approvedTokens: Token[];
+  screeningSummary: ScreeningSummary;
+  rejectionLog: RejectionLogEntry[];
   selectedToken: Token | null;
   streamRunning: boolean;
-  filter: TokenFilter;
-  onFilterChange: (filter: TokenFilter) => void;
   onSelectToken: (id: string) => void;
   onOpenControls: () => void;
 };
 
-const filters: TokenFilter[] = [
-  "All",
-  "Approved",
-  "Pending",
-  "Rejected",
-];
-
 export function TokenTable({
-  tokens,
-  visibleTokens,
+  approvedTokens,
+  screeningSummary,
+  rejectionLog,
   selectedToken,
   streamRunning,
-  filter,
-  onFilterChange,
   onSelectToken,
   onOpenControls,
 }: TokenTableProps) {
@@ -41,26 +33,7 @@ export function TokenTable({
       aria-label="Token discovery stream"
     >
       <div className="stream-toolbar">
-        <div className="filters" aria-label="Filter tokens">
-          {filters.map((item) => {
-            const count =
-              item === "All"
-                ? tokens.length
-                : tokens.filter((token) => token.status === item).length;
-
-            return (
-              <button
-                type="button"
-                className={filter === item ? "is-active" : ""}
-                key={item}
-                onClick={() => onFilterChange(item)}
-              >
-                {item}
-                <span>{count}</span>
-              </button>
-            );
-          })}
-        </div>
+        <DiscoveryCounters summary={screeningSummary} />
         <div className="stream-tools">
           <span className="last-update" role="status">
             <i className={streamRunning ? "paused-dot" : "offline-dot"} />
@@ -68,6 +41,10 @@ export function TokenTable({
               ? "Active · No source connected"
               : "Stream stopped"}
           </span>
+          <RejectionLog
+            entries={rejectionLog}
+            totalRejected={screeningSummary.rejected}
+          />
           <button
             type="button"
             className="icon-button"
@@ -85,7 +62,6 @@ export function TokenTable({
             <tr>
               <th>Token</th>
               <th>Age</th>
-              <th>First pass</th>
               <th>Risk</th>
               <th>Rating</th>
               <th>Strategy match</th>
@@ -95,7 +71,7 @@ export function TokenTable({
             </tr>
           </thead>
           <tbody>
-            {visibleTokens.map((token) => (
+            {approvedTokens.map((token) => (
               <tr
                 key={token.id}
                 className={
@@ -127,9 +103,6 @@ export function TokenTable({
                   </button>
                 </td>
                 <td className="mono subtle">{token.age}</td>
-                <td>
-                  <StatusBadge status={token.status} />
-                </td>
                 <td>
                   <RiskBadge value={token.risk} />
                 </td>
@@ -171,16 +144,18 @@ export function TokenTable({
             ))}
           </tbody>
         </table>
-        {visibleTokens.length === 0 && (
+        {approvedTokens.length === 0 && (
           <div className="empty-state empty-state--stream">
             <span>⌁</span>
             <strong>
-              {streamRunning ? "Waiting for a source" : "Stream stopped"}
+              {streamRunning
+                ? "Waiting for approved candidates"
+                : "Stream stopped"}
             </strong>
             <p>
               {streamRunning
-                ? "The stream is active, but no discovery source is connected."
-                : "Start the stream when you are ready to receive candidates."}
+                ? "Only candidates that pass initial screening appear here."
+                : "Start the stream when you are ready to screen candidates."}
             </p>
           </div>
         )}
@@ -188,12 +163,12 @@ export function TokenTable({
 
       <footer className="stream-footer">
         <span>
-          {visibleTokens.length} tokens · Stream{" "}
+          {approvedTokens.length} approved tokens · Stream{" "}
           {streamRunning ? "active" : "stopped"}
         </span>
         <span>
           {streamRunning
-            ? "Source disconnected · Gate not running"
+            ? "Pending and rejected candidates stay out of the feed"
             : "Deterministic gate not running"}
         </span>
       </footer>

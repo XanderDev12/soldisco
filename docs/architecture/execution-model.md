@@ -21,7 +21,8 @@ Optimistic UI state is never treated as a confirmed fill or position.
 Paper trading comes first. It uses recorded market conditions and realistic
 latency, quote expiry, priority fees, slippage, price impact, failed entries,
 failed exits, and sellability constraints. Paper fills are clearly separated
-from live facts.
+from live facts. It records simulated buy and sell prices in its own ledger and
+does not connect a wallet, sign, or submit a transaction.
 
 ## Interactive live mode
 

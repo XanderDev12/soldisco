@@ -1,7 +1,5 @@
 export type DashboardView =
-  | "token-stream"
-  | "initial-approval"
-  | "watchlist"
+  | "discovery"
   | "positions"
   | "orders"
   | "alerts"
@@ -9,19 +7,18 @@ export type DashboardView =
   | "replays"
   | "controls";
 
-export type SectionView = Exclude<DashboardView, "token-stream">;
+export type SectionView = Exclude<DashboardView, "discovery">;
 export type ExecutionMode = "Paper" | "Live";
 export type TradeSide = "Buy" | "Sell";
 export type TokenStatus = "Approved" | "Pending" | "Rejected";
 export type MatchLevel = "Strong" | "Moderate" | "None" | "Evaluating";
-export type TokenFilter = "All" | TokenStatus;
 export type InspectorTab =
   | "Overview"
   | "Risk"
   | "Signals"
   | "Trade"
   | "Position";
-export type LayoutKey = "sidebar" | "inspector" | "tray";
+export type LayoutKey = "sidebar" | "inspector";
 export type LayoutPreferences = Record<LayoutKey, number>;
 
 export type Token = {
@@ -30,7 +27,7 @@ export type Token = {
   symbol: string;
   mint: string;
   age: string;
-  status: TokenStatus;
+  status: "Approved";
   risk: number;
   rating: string;
   match: MatchLevel;
@@ -45,4 +42,19 @@ export type Token = {
   momentum: number[];
   reason: string;
   checks: string[];
+};
+
+export type ScreeningSummary = {
+  pending: number;
+  approved: number;
+  rejected: number;
+  ratePerMinute: number | null;
+};
+
+export type RejectionLogEntry = {
+  id: string;
+  mint: string;
+  symbol: string | null;
+  reasonCodes: string[];
+  rejectedAt: string;
 };

@@ -5,8 +5,9 @@ import type {
 import type {
   ExecutionMode,
   InspectorTab,
+  RejectionLogEntry,
+  ScreeningSummary,
   Token,
-  TokenFilter,
   TradeSide,
 } from "./types";
 import { TokenInspector } from "./TokenInspector";
@@ -14,12 +15,11 @@ import { TokenStreamHeader } from "./TokenStreamHeader";
 import { TokenTable } from "./TokenTable";
 
 type TokenStreamViewProps = {
-  tokens: Token[];
-  visibleTokens: Token[];
+  approvedTokens: Token[];
+  screeningSummary: ScreeningSummary;
+  rejectionLog: RejectionLogEntry[];
   selectedToken: Token | null;
   streamRunning: boolean;
-  filter: TokenFilter;
-  onFilterChange: (filter: TokenFilter) => void;
   onSelectToken: (id: string) => void;
   onOpenControls: () => void;
   inspectorSize: number;
@@ -41,12 +41,11 @@ type TokenStreamViewProps = {
 };
 
 export function TokenStreamView({
-  tokens,
-  visibleTokens,
+  approvedTokens,
+  screeningSummary,
+  rejectionLog,
   selectedToken,
   streamRunning,
-  filter,
-  onFilterChange,
   onSelectToken,
   onOpenControls,
   inspectorSize,
@@ -74,12 +73,11 @@ export function TokenStreamView({
 
       <div className="stream-layout">
         <TokenTable
-          tokens={tokens}
-          visibleTokens={visibleTokens}
+          approvedTokens={approvedTokens}
+          screeningSummary={screeningSummary}
+          rejectionLog={rejectionLog}
           selectedToken={selectedToken}
           streamRunning={streamRunning}
-          filter={filter}
-          onFilterChange={onFilterChange}
           onSelectToken={onSelectToken}
           onOpenControls={onOpenControls}
         />

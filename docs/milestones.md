@@ -3,11 +3,14 @@
 ## 1. UI skeleton — complete
 
 - Implement the stream-first console with honest disconnected states.
-- Show every incoming token and its pending, approved, rejected, or error state.
+- Show only first-pass-approved candidates in the discovery feed.
+- Summarize pending and rejected candidates through truthful counters and a
+  compact rejection-reason log.
 - Display risk, rating, strategy match, momentum, and data freshness.
 - Keep token and position trackers empty until authoritative sources connect.
 - Add persistent, user-adjustable workspace regions.
-- Make every sidebar destination accessible with truthful empty states.
+- Keep one Discovery destination and one Positions destination; avoid separate
+  first-pass, watchlist, or duplicate positions surfaces.
 - Add UI-only start and stop controls while keeping discovery disconnected.
 - Keep wallet and execution controls explicitly disabled.
 

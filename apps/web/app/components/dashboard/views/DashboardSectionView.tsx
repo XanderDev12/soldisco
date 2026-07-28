@@ -3,12 +3,10 @@
 import type { ExecutionMode, SectionView } from "../types";
 import { AlertsView } from "./AlertsView";
 import { ControlsView } from "./ControlsView";
-import { InitialApprovalView } from "./InitialApprovalView";
 import { OrdersView } from "./OrdersView";
 import { PositionsView } from "./PositionsView";
 import { ReplaysView } from "./ReplaysView";
 import { StrategiesView } from "./StrategiesView";
-import { WatchlistView } from "./WatchlistView";
 
 export type DashboardSectionViewProps = {
   view: SectionView;
@@ -18,7 +16,6 @@ export type DashboardSectionViewProps = {
   onModeChange: (mode: ExecutionMode) => void;
   onWallet: () => void;
   onUpload: () => void;
-  onResetLayout: () => void;
 };
 
 function SectionContent({
@@ -29,17 +26,12 @@ function SectionContent({
   onModeChange,
   onWallet,
   onUpload,
-  onResetLayout,
 }: DashboardSectionViewProps) {
   switch (view) {
-    case "initial-approval":
-      return <InitialApprovalView />;
-    case "watchlist":
-      return <WatchlistView />;
     case "positions":
-      return <PositionsView onWallet={onWallet} />;
+      return <PositionsView mode={mode} onWallet={onWallet} />;
     case "orders":
-      return <OrdersView />;
+      return <OrdersView mode={mode} />;
     case "alerts":
       return <AlertsView />;
     case "strategies":
@@ -53,7 +45,6 @@ function SectionContent({
           mode={mode}
           onToggleStream={onToggleStream}
           onModeChange={onModeChange}
-          onResetLayout={onResetLayout}
         />
       );
     default:

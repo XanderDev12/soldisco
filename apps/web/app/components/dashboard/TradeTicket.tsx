@@ -1,5 +1,6 @@
 import type { ExecutionMode, Token, TradeSide } from "./types";
 import { RiskBadge } from "./TokenBadges";
+import { executionModePresentation } from "./executionModePresentation";
 
 type TradeTicketProps = {
   token: Token;
@@ -20,6 +21,7 @@ export function TradeTicket({
   mode,
   onWallet,
 }: TradeTicketProps) {
+  const presentation = executionModePresentation[mode];
   const presets =
     side === "Buy"
       ? ["0.05", "0.10", "0.25", "0.50"]
@@ -28,8 +30,8 @@ export function TradeTicket({
   return (
     <div className="trade-ticket">
       <div className="trade-safety">
-        <span>EXECUTION LOCKED</span>
-        <p>No route, quote, wallet, or execution service is connected.</p>
+        <span>{presentation.trade.safetyLabel}</span>
+        <p>{presentation.trade.safetyDetail}</p>
       </div>
 
       <div className="trade-side">
@@ -102,16 +104,15 @@ export function TradeTicket({
         <RiskBadge value={token.risk} />
       </div>
 
-      <button type="button" className="connect-ticket" onClick={onWallet}>
-        Connect wallet to continue
-      </button>
+      {presentation.requiresWallet && (
+        <button type="button" className="connect-ticket" onClick={onWallet}>
+          Connect wallet to continue
+        </button>
+      )}
       <button type="button" className="review-disabled" disabled>
-        Review {side.toLowerCase()} · {mode} mode
+        {presentation.trade.reviewLabel(side.toLowerCase())}
       </button>
-      <p className="ticket-footnote">
-        Final quotes, simulation, and explicit wallet confirmation will be
-        required before execution.
-      </p>
+      <p className="ticket-footnote">{presentation.trade.footnote}</p>
     </div>
   );
 }

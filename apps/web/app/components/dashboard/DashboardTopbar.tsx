@@ -6,7 +6,6 @@ export interface DashboardTopbarProps {
   mode: ExecutionMode;
   onOpenMobileNav: () => void;
   onToggleStream: () => void;
-  onResetLayout: () => void;
   onUpload: () => void;
   onModeChange: (mode: ExecutionMode) => void;
   onWallet: () => void;
@@ -18,7 +17,6 @@ export function DashboardTopbar({
   mode,
   onOpenMobileNav,
   onToggleStream,
-  onResetLayout,
   onUpload,
   onModeChange,
   onWallet,
@@ -43,10 +41,6 @@ export function DashboardTopbar({
           <select aria-label="Active strategy" disabled>
             <option>No strategy active</option>
           </select>
-          <span className="strategy-control__state">
-            <i className="offline-dot" />
-            Inactive
-          </span>
         </div>
 
         <div className="topbar__actions">
@@ -64,14 +58,6 @@ export function DashboardTopbar({
               ? "Stream active. Waiting for a discovery source."
               : "Stream stopped."}
           </span>
-          <button
-            type="button"
-            className="layout-reset"
-            onClick={onResetLayout}
-            title="Reset panel sizes"
-          >
-            ↺ Layout
-          </button>
           <button type="button" className="upload-button" onClick={onUpload}>
             <span>＋</span>
             Upload strategy
@@ -90,10 +76,12 @@ export function DashboardTopbar({
             ))}
           </div>
 
-          <button type="button" className="wallet-button" onClick={onWallet}>
-            <span className="wallet-button__icon">▰</span>
-            Connect wallet
-          </button>
+          {mode === "Live" && (
+            <button type="button" className="wallet-button" onClick={onWallet}>
+              <span className="wallet-button__icon">▰</span>
+              Connect wallet
+            </button>
+          )}
         </div>
       </header>
 
