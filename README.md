@@ -5,19 +5,40 @@ milestone establishes the interface and typed system boundaries; the token,
 strategy, and position trackers remain empty until their authoritative sources
 are connected.
 
+## Planned product flow
+
+1. Axiom supplies live candidates and historical recovery batches.
+2. Every observation is recorded with source provenance, Solana coordinates,
+   market identity, and both event and receipt time.
+3. Provider-neutral RPC checks perform the deterministic scam and rug first
+   pass.
+4. Approved candidates enter time-bounded monitoring windows.
+5. Versioned market, wallet, and cluster snapshots feed enabled strategies.
+6. Advisory AI adds asynchronous commentary without changing deterministic
+   results or authorizing trades.
+7. Strategy evaluations produce explainable matches and, later, paper-trade
+   proposals.
+8. Confirmed activity projects into orders, positions, PnL, alerts, and
+   deterministic replays.
+
 ## Workspace
 
-- `apps/web` — discovery console and future trading interface
-- `apps/api` — browser-facing API and live stream boundary
-- `apps/engine` — deterministic discovery pipeline boundary
-- `apps/ai-worker` — advisory AI triage boundary
-- `apps/execution-api` — future user-approved execution boundary
-- `apps/confirmation-worker` — future transaction confirmation boundary
-- `apps/portfolio-worker` — future holdings and PnL boundary
+- `apps/web` — implemented discovery console and future trading interface
+- `apps/api`, `apps/engine`, and worker directories — documented ownership
+  boundaries for the future backend
+- `apps/execution-api` — separately isolated execution boundary
+- `packages` — framework-neutral contracts and domain modules
 - `docs` — architecture, configuration, and milestone notes
-- `infrastructure` — plans for local service dependencies
+- `infrastructure` — deferred infrastructure decision markers
 
-Each service is intentionally independent. No worker, strategy, or AI component may sign or submit transactions.
+The first backend will be a modular monolith: API, ingestion, deterministic
+analysis, projections, paper portfolio, and background jobs will run in one
+process while preserving their package boundaries. The folders above do not
+commit the project to separately deployed services. Execution remains more
+strongly isolated because it has different security consequences.
+
+No ingestion, strategy, AI, confirmation, or portfolio component may sign or
+submit transactions.
 
 ## Current scope
 
@@ -31,6 +52,9 @@ Axiom ingestion, Solana RPC access, scam/rug checks, persistent event
 infrastructure, wallet connections, quotes, purchases, sales, and position
 reconciliation have not been implemented.
 
+The next milestone formalizes provenance, replay, independent component state,
+candidate windows, and versioned feature snapshots before connecting Axiom.
+
 ## Run locally
 
 ```bash
@@ -38,9 +62,12 @@ cd apps/web
 npm run dev
 ```
 
-Run `npm run quality` before syncing every substantial feature. It performs
-linting, application and package type checks, a production build, and the test
-suite.
+The repository pins Node.js in `.nvmrc`. With `nvm` installed, run `nvm use`
+before installing dependencies.
+
+Run root-level `npm run verify` before syncing every substantial feature. It
+performs linting, application and package type checks, a production build, the
+test suite, and the production dependency audit.
 
 ## Feature workflow
 
@@ -58,4 +85,6 @@ GitHub runs the same command for every push and pull request. Dependencies are
 committed through `apps/web/package-lock.json`; installed modules and generated
 build output remain local and are ignored.
 
-See [the architecture overview](docs/architecture/overview.md) and [milestones](docs/milestones.md) before adding integrations.
+See the [documentation index](docs/README.md), [architecture
+overview](docs/architecture/overview.md), and [milestones](docs/milestones.md)
+before adding integrations.
