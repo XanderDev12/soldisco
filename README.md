@@ -23,8 +23,9 @@ Each service is intentionally independent. No worker, strategy, or AI component 
 
 The discovery console and typed service-contract foundation are in place. The
 UI includes empty stream filters, deterministic status/risk/rating surfaces,
-strategy controls, token inspection, guarded buy/sell tickets, position
-monitoring, and persistent adjustable panel sizes.
+accessible views for every workspace destination, session-local stream
+controls, strategy controls, token inspection, guarded buy/sell tickets,
+position monitoring, and persistent adjustable panel sizes.
 
 Axiom ingestion, Solana RPC access, scam/rug checks, persistent event
 infrastructure, wallet connections, quotes, purchases, sales, and position

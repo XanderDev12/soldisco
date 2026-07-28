@@ -8,6 +8,11 @@ import {
   useMemo,
   useState,
 } from "react";
+import {
+  DashboardSectionView,
+  navGroups,
+  type DashboardView,
+} from "./DashboardSectionView";
 
 type TokenStatus = "Approved" | "Pending" | "Rejected";
 type MatchLevel = "Strong" | "Moderate" | "None" | "Evaluating";
@@ -74,33 +79,6 @@ const inspectorTabs: InspectorTab[] = [
   "Position",
 ];
 
-const navGroups = [
-  {
-    label: "DISCOVERY",
-    items: [
-      { icon: "⌁", name: "Token stream", active: true },
-      { icon: "✓", name: "Initial approval" },
-      { icon: "◇", name: "Watchlist" },
-    ],
-  },
-  {
-    label: "TRADING",
-    items: [
-      { icon: "↗", name: "Positions" },
-      { icon: "≡", name: "Orders" },
-      { icon: "◌", name: "Alerts" },
-    ],
-  },
-  {
-    label: "SYSTEM",
-    items: [
-      { icon: "⌘", name: "Strategies" },
-      { icon: "↺", name: "Replays" },
-      { icon: "⚙", name: "Controls" },
-    ],
-  },
-];
-
 function Sparkline({
   values,
   positive,
@@ -148,6 +126,9 @@ function MatchBadge({ match }: { match: MatchLevel }) {
 }
 
 export function DiscoveryDashboard() {
+  const [activeView, setActiveView] =
+    useState<DashboardView>("token-stream");
+  const [streamRunning, setStreamRunning] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(
     tokens[0]?.id ?? null,
   );
@@ -162,6 +143,7 @@ export function DiscoveryDashboard() {
   const [layout, setLayout] = useState<LayoutPreferences>(defaultLayout);
   const [layoutLoaded, setLayoutLoaded] = useState(false);
   const [activeResize, setActiveResize] = useState<LayoutKey | null>(null);
+  const [expandedTraySize, setExpandedTraySize] = useState(160);
 
   const selected = tokens.find((token) => token.id === selectedId) ?? null;
   const visibleTokens = useMemo(
@@ -208,6 +190,19 @@ export function DiscoveryDashboard() {
   function selectToken(id: string) {
     setSelectedId(id);
     setTab("Overview");
+  }
+
+  function openView(view: DashboardView) {
+    setActiveView(view);
+    setSideNavOpen(false);
+    window.requestAnimationFrame(() => {
+      document.getElementById("view-title")?.focus();
+    });
+  }
+
+  function showWalletUnavailable() {
+    setWalletMessage(true);
+    window.setTimeout(() => setWalletMessage(false), 2600);
   }
 
   function setLayoutValue(key: LayoutKey, value: number) {
@@ -285,6 +280,18 @@ export function DiscoveryDashboard() {
     setLayout(defaultLayout);
   }
 
+  const trayExpanded = layout.tray > defaultLayout.tray + 8;
+
+  function toggleTray() {
+    if (trayExpanded) {
+      setExpandedTraySize(layout.tray);
+      setLayoutValue("tray", defaultLayout.tray);
+      return;
+    }
+
+    setLayoutValue("tray", expandedTraySize);
+  }
+
   const layoutStyle = {
     "--sidebar-pref": `${layout.sidebar}px`,
     "--inspector-pref": `${layout.inspector}px`,
@@ -320,11 +327,16 @@ export function DiscoveryDashboard() {
               {group.items.map((item) => (
                 <button
                   type="button"
-                  className={`nav-item ${item.active ? "nav-item--active" : ""}`}
+                  id={`nav-${item.id}`}
+                  className={`nav-item ${activeView === item.id ? "nav-item--active" : ""}`}
                   key={item.name}
-                  onClick={() => setSideNavOpen(false)}
+                  aria-controls="dashboard-view"
+                  aria-current={activeView === item.id ? "page" : undefined}
+                  onClick={() => openView(item.id)}
                 >
-                  <span className="nav-item__icon">{item.icon}</span>
+                  <span className="nav-item__icon" aria-hidden="true">
+                    {item.icon}
+                  </span>
                   <span>{item.name}</span>
                 </button>
               ))}
@@ -346,7 +358,7 @@ export function DiscoveryDashboard() {
           </div>
           <div className="system-card__row">
             <span>Stream</span>
-            <span>Not connected</span>
+            <span>{streamRunning ? "Active · no source" : "Stopped"}</span>
           </div>
         </div>
 
@@ -356,7 +368,11 @@ export function DiscoveryDashboard() {
             <strong>Local workspace</strong>
             <span>Development build</span>
           </div>
-          <button type="button" aria-label="Workspace menu">
+          <button
+            type="button"
+            aria-label="Open controls"
+            onClick={() => openView("controls")}
+          >
             ···
           </button>
         </div>
@@ -395,6 +411,8 @@ export function DiscoveryDashboard() {
             className="mobile-menu"
             onClick={() => setSideNavOpen(true)}
             aria-label="Open navigation"
+            aria-controls="navigation-panel"
+            aria-expanded={sideNavOpen}
           >
             ☰
           </button>
@@ -402,11 +420,8 @@ export function DiscoveryDashboard() {
           <div className="strategy-control">
             <span className="strategy-control__label">STRATEGY</span>
             <span className="strategy-control__icon">⌁</span>
-            <select aria-label="Active strategy">
+            <select aria-label="Active strategy" disabled>
               <option>No strategy active</option>
-              <option disabled>Wallet-Conditioned Momentum — not configured</option>
-              <option disabled>Liquidity Breakout — coming soon</option>
-              <option disabled>Mean Reversion — coming soon</option>
             </select>
             <span className="strategy-control__state">
               <i className="offline-dot" />
@@ -415,6 +430,20 @@ export function DiscoveryDashboard() {
           </div>
 
           <div className="topbar__actions">
+            <button
+              type="button"
+              className={`stream-toggle ${streamRunning ? "stream-toggle--stop" : ""}`}
+              onClick={() => setStreamRunning((running) => !running)}
+              aria-describedby="stream-status"
+            >
+              <span aria-hidden="true">{streamRunning ? "■" : "▶"}</span>
+              {streamRunning ? "Stop stream" : "Start stream"}
+            </button>
+            <span id="stream-status" className="sr-only" aria-live="polite">
+              {streamRunning
+                ? "Stream active. Waiting for a discovery source."
+                : "Stream stopped."}
+            </span>
             <button
               type="button"
               className="layout-reset"
@@ -448,10 +477,7 @@ export function DiscoveryDashboard() {
             <button
               type="button"
               className="wallet-button"
-              onClick={() => {
-                setWalletMessage(true);
-                window.setTimeout(() => setWalletMessage(false), 2600);
-              }}
+              onClick={showWalletUnavailable}
             >
               <span className="wallet-button__icon">▰</span>
               Connect wallet
@@ -466,32 +492,42 @@ export function DiscoveryDashboard() {
           </div>
         )}
 
-        <div className="content-header">
-          <div>
-            <div className="eyebrow">
-              <i className="offline-dot" />
-              DISCOVERY IDLE
+        {activeView === "token-stream" ? (
+          <section
+            id="dashboard-view"
+            className="dashboard-view dashboard-view--stream"
+            aria-labelledby="view-title"
+          >
+          <div className="content-header">
+            <div>
+              <div className="eyebrow">
+                <i className={streamRunning ? "live-dot" : "offline-dot"} />
+                {streamRunning ? "STREAM ACTIVE" : "DISCOVERY STOPPED"}
+              </div>
+              <h1 id="view-title" tabIndex={-1}>All coins</h1>
+              <p>
+                {streamRunning
+                  ? "The stream is active and waiting for a discovery source."
+                  : "Start the stream when you are ready to receive candidates."}
+              </p>
             </div>
-            <h1>All coins</h1>
-            <p>Tokens will appear here after the discovery stream is connected.</p>
+            <div className="content-header__stats">
+              <div>
+                <span>STREAM RATE</span>
+                <strong>— <small>/ min</small></strong>
+              </div>
+              <div>
+                <span>FIRST-PASS RATE</span>
+                <strong>—<small>%</small></strong>
+              </div>
+              <div>
+                <span>MEDIAN LATENCY</span>
+                <strong>— <small>sec</small></strong>
+              </div>
+            </div>
           </div>
-          <div className="content-header__stats">
-            <div>
-              <span>STREAM RATE</span>
-              <strong>— <small>/ min</small></strong>
-            </div>
-            <div>
-              <span>FIRST-PASS RATE</span>
-              <strong>—<small>%</small></strong>
-            </div>
-            <div>
-              <span>MEDIAN LATENCY</span>
-              <strong>— <small>sec</small></strong>
-            </div>
-          </div>
-        </div>
 
-        <div className="stream-layout">
+          <div className="stream-layout">
           <section
             id="stream-panel"
             className="stream-card"
@@ -518,18 +554,16 @@ export function DiscoveryDashboard() {
                 })}
               </div>
               <div className="stream-tools">
-                <span className="last-update">
-                  <i className="offline-dot" />
-                  Waiting for stream
+                <span className="last-update" role="status">
+                  <i className={streamRunning ? "paused-dot" : "offline-dot"} />
+                  {streamRunning ? "Active · No source connected" : "Stream stopped"}
                 </span>
                 <button
                   type="button"
-                  className="pause-button"
-                  disabled
+                  className="icon-button"
+                  aria-label="Open stream controls"
+                  onClick={() => openView("controls")}
                 >
-                  Ⅱ Pause
-                </button>
-                <button type="button" className="icon-button" aria-label="Stream settings">
                   ⚙
                 </button>
               </div>
@@ -618,15 +652,25 @@ export function DiscoveryDashboard() {
               {visibleTokens.length === 0 && (
                 <div className="empty-state empty-state--stream">
                   <span>⌁</span>
-                  <strong>No tokens yet</strong>
-                  <p>The stream is empty until a discovery source is connected.</p>
+                  <strong>{streamRunning ? "Waiting for a source" : "Stream stopped"}</strong>
+                  <p>
+                    {streamRunning
+                      ? "The stream is active, but no discovery source is connected."
+                      : "Start the stream when you are ready to receive candidates."}
+                  </p>
                 </div>
               )}
             </div>
 
             <footer className="stream-footer">
-              <span>{visibleTokens.length} tokens · Stream disconnected</span>
-              <span>Deterministic gate not running</span>
+              <span>
+                {visibleTokens.length} tokens · Stream {streamRunning ? "active" : "stopped"}
+              </span>
+              <span>
+                {streamRunning
+                  ? "Source disconnected · Gate not running"
+                  : "Deterministic gate not running"}
+              </span>
             </footer>
           </section>
 
@@ -825,10 +869,7 @@ export function DiscoveryDashboard() {
                   amount={orderAmount}
                   setAmount={setOrderAmount}
                   mode={mode}
-                  onWallet={() => {
-                    setWalletMessage(true);
-                    window.setTimeout(() => setWalletMessage(false), 2600);
-                  }}
+                  onWallet={showWalletUnavailable}
                 />
               )}
 
@@ -861,9 +902,25 @@ export function DiscoveryDashboard() {
               </div>
             </aside>
           )}
-        </div>
+          </div>
+          </section>
+        ) : (
+          <DashboardSectionView
+            view={activeView}
+            streamRunning={streamRunning}
+            mode={mode}
+            onToggleStream={() => setStreamRunning((running) => !running)}
+            onModeChange={setMode}
+            onWallet={showWalletUnavailable}
+            onUpload={() => setUploadOpen(true)}
+            onResetLayout={resetLayout}
+          />
+        )}
 
-        <div id="positions-panel" className="positions-tray">
+        <div
+          id="positions-panel"
+          className={`positions-tray ${trayExpanded ? "positions-tray--expanded" : ""}`}
+        >
           <button
             type="button"
             className="resize-handle resize-handle--tray"
@@ -879,16 +936,26 @@ export function DiscoveryDashboard() {
             onDoubleClick={() => setLayoutValue("tray", defaultLayout.tray)}
             title="Drag to resize · Double-click to reset"
           />
-          <button type="button" className="positions-tray__label">
-            <span className="positions-icon">↗</span>
+          <button
+            type="button"
+            className="positions-tray__label"
+            onClick={toggleTray}
+            aria-expanded={trayExpanded}
+            aria-controls="positions-tray-content"
+          >
+            <span className="positions-icon" aria-hidden="true">↗</span>
             <span>
               <strong>Positions</strong>
-              <small>0 open positions</small>
+              <small>No position data</small>
             </span>
-            <span className="tray-chevron">⌃</span>
+            <span className="tray-chevron" aria-hidden="true">
+              {trayExpanded ? "⌄" : "⌃"}
+            </span>
           </button>
-          <div className="positions-empty">Position data unavailable.</div>
-          <span className="paper-tag">PAPER</span>
+          <div id="positions-tray-content" className="positions-empty">
+            Position data unavailable.
+          </div>
+          <span className="paper-tag">{mode.toUpperCase()}</span>
         </div>
       </section>
 
@@ -897,7 +964,7 @@ export function DiscoveryDashboard() {
           <span>▰</span>
           <div>
             <strong>Wallet connection is not enabled</strong>
-            <p>This skeleton cannot sign or submit transactions.</p>
+            <p>This interface cannot sign or submit transactions.</p>
           </div>
         </div>
       )}

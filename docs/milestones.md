@@ -7,6 +7,8 @@
 - Display risk, rating, strategy match, momentum, and data freshness.
 - Keep token and position trackers empty until authoritative sources connect.
 - Add persistent, user-adjustable workspace regions.
+- Make every sidebar destination accessible with truthful empty states.
+- Add UI-only start and stop controls while keeping discovery disconnected.
 - Keep wallet and execution controls explicitly disabled.
 
 ## 2. Contracts and projection pipeline
