@@ -1,15 +1,16 @@
 use std::{
     collections::{BTreeMap, HashSet, VecDeque},
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use soldisco_api_contracts::StreamStatus;
+use soldisco_discovery_engine::ObservationWindowRegistry;
 use soldisco_domain::{MarketIdentity, Network, ObservationKey, SourceProgram, Venue};
 use soldisco_persistence::{
     Database, IntakeQuarantineRecord, MAX_QUARANTINE_EVIDENCE_BASE64_BYTES, PersistenceError,
-    PumpSwapPool, RecoveryCheckpoint,
+    PumpSwapPool,
 };
 use soldisco_solana_rpc::{RpcError, SolanaHttpClient, SolanaPubsubClient};
 use soldisco_source_pump::{
@@ -27,26 +28,32 @@ use crate::{
     config::Config,
     jobs::{
         collector::{
-            CollectorError, CollectorRuntimeConfig, LogScopeError, ProgramLogBatch,
+            CollectorError, CollectorRuntimeConfig, DiscoveryRpcHealthUpdate, ProgramLogBatch,
             ProgramSourceContext, SourceConnectionState, run_program_source,
-            scope_program_data_logs,
         },
         discovery::{DiscoveryWorkerConfig, run_discovery_worker},
+        discovery_rpc::DiscoveryRpcGate,
+        intake::{
+            BatchPurpose, LogScopeError, PUMP_PROGRAMS, discovery_event_is_fresh, discovery_seed,
+            event_matches_confirmed_window, is_discovery_event, scope_program_data_logs,
+        },
         maintenance::{
             MaintenanceError, MaintenanceRuntimeConfig, ensure_storage_capacity, run_maintenance,
             run_maintenance_cycle,
         },
         normalization::{MarketRegistry, NormalizationError, normalize_pump_event},
+        pending_activity::{PendingActivityAdmission, PendingActivityQueue},
     },
     state::LiveEventBus,
 };
 
-const CHECKPOINT_KIND: &str = "PROGRAM_LOGS";
 const PIPELINE_RESTART_INITIAL_DELAY: Duration = Duration::from_secs(1);
 const PIPELINE_RESTART_MAX_DELAY: Duration = Duration::from_secs(30);
 const MAX_QUARANTINE_RAW_BYTES: usize = (MAX_QUARANTINE_EVIDENCE_BASE64_BYTES / 4) * 3;
 const SOLANA_MAINNET_GENESIS_HASH: &str = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 const SOLANA_DEVNET_GENESIS_HASH: &str = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+const DISCOVERY_RPC_FAILURES_BEFORE_DEGRADED: u32 = 3;
+const DISCOVERY_SIGNATURE_RETENTION_MARGIN: Duration = Duration::from_secs(11);
 
 #[derive(Clone)]
 pub struct PipelineConfig {
@@ -55,6 +62,9 @@ pub struct PipelineConfig {
     pub collector: CollectorRuntimeConfig,
     pub maintenance: MaintenanceRuntimeConfig,
     pub queue_capacity: usize,
+    pub maximum_active_windows: usize,
+    pub discovery_rpc_requests_per_second: u32,
+    pub discovery_rpc_rate_limit_cooldown: Duration,
 }
 
 impl From<&Config> for PipelineConfig {
@@ -68,10 +78,10 @@ impl From<&Config> for PipelineConfig {
                 reconnect_delay: config.solana_reconnect_delay,
                 request_timeout: config.solana_request_timeout,
                 rpc_max_in_flight: config.solana_rpc_max_in_flight,
-                live_fetch_max_attempts: config.solana_live_fetch_max_attempts,
+                notification_processing_capacity: config.collector_queue_capacity,
                 subscription_idle_timeout: config.solana_subscription_idle_timeout,
-                recovery_page_size: config.recovery_page_size,
-                recovery_max_records: config.recovery_max_records,
+                maximum_discovery_age: config.discovery_max_event_age,
+                observation_window_duration: config.discovery_observation_window,
             },
             maintenance: MaintenanceRuntimeConfig {
                 terminal_history_retention: config.retention_terminal_history,
@@ -82,7 +92,24 @@ impl From<&Config> for PipelineConfig {
                 database_max_bytes: config.database_max_bytes,
             },
             queue_capacity: config.collector_queue_capacity,
+            maximum_active_windows: config.discovery_max_active_windows,
+            discovery_rpc_requests_per_second: config.solana_discovery_rpc_requests_per_second,
+            discovery_rpc_rate_limit_cooldown: config.solana_discovery_rpc_rate_limit_cooldown,
         }
+    }
+}
+
+impl PipelineConfig {
+    #[must_use]
+    pub fn discovery_rpc_gate(&self) -> DiscoveryRpcGate {
+        DiscoveryRpcGate::new(
+            self.collector.rpc_max_in_flight,
+            self.discovery_rpc_requests_per_second,
+            self.discovery_rpc_rate_limit_cooldown,
+            self.collector
+                .maximum_discovery_age
+                .saturating_add(DISCOVERY_SIGNATURE_RETENTION_MARGIN),
+        )
     }
 }
 
@@ -126,12 +153,21 @@ pub async fn spawn_pipeline(
     database: Database,
     events: LiveEventBus,
     config: PipelineConfig,
+    discovery_rpc: DiscoveryRpcGate,
 ) -> Result<SpawnedPipeline, PipelineError> {
     let cancellation = CancellationToken::new();
     let (status_sender, status) = watch::channel(StreamStatus::Starting);
     let task_cancellation = cancellation.clone();
     let task = tokio::spawn(async move {
-        run_supervised_pipeline(database, events, config, status_sender, task_cancellation).await
+        run_supervised_pipeline(
+            database,
+            events,
+            config,
+            discovery_rpc,
+            status_sender,
+            task_cancellation,
+        )
+        .await
     });
 
     Ok(SpawnedPipeline {
@@ -145,6 +181,7 @@ async fn run_supervised_pipeline(
     database: Database,
     events: LiveEventBus,
     config: PipelineConfig,
+    discovery_rpc: DiscoveryRpcGate,
     status: watch::Sender<StreamStatus>,
     cancellation: CancellationToken,
 ) -> Result<(), PipelineError> {
@@ -182,6 +219,7 @@ async fn run_supervised_pipeline(
                 pubsub,
                 markets,
                 config: config.clone(),
+                discovery_rpc: discovery_rpc.clone(),
                 status: status.clone(),
                 cancellation: attempt_cancellation,
             })
@@ -286,6 +324,7 @@ struct PipelineAttempt {
     pubsub: SolanaPubsubClient,
     markets: MarketRegistry,
     config: PipelineConfig,
+    discovery_rpc: DiscoveryRpcGate,
     status: watch::Sender<StreamStatus>,
     cancellation: CancellationToken,
 }
@@ -298,23 +337,29 @@ async fn run_pipeline(attempt: PipelineAttempt) -> Result<(), PipelineError> {
         pubsub,
         markets,
         config,
+        discovery_rpc,
         status,
         cancellation,
     } = attempt;
     let (batch_sender, batch_receiver) = mpsc::channel(config.queue_capacity);
     let (connection_sender, mut connection_receiver) = mpsc::unbounded_channel();
+    let (discovery_rpc_health_sender, mut discovery_rpc_health_receiver) =
+        mpsc::unbounded_channel();
     let discovery_wake = Arc::new(Notify::new());
+    let observation_windows = ObservationWindowRegistry::new(config.maximum_active_windows);
     let mut tasks = JoinSet::new();
 
     spawn_source(
         &mut tasks,
         PumpProgram::Pump,
         ProgramSourceContext {
-            database: database.clone(),
             http: http.clone(),
             pubsub: pubsub.clone(),
             batches: batch_sender.clone(),
             connections: connection_sender.clone(),
+            discovery_rpc_health: discovery_rpc_health_sender.clone(),
+            windows: observation_windows.clone(),
+            discovery_rpc: discovery_rpc.clone(),
             config: config.collector.clone(),
         },
         cancellation.child_token(),
@@ -323,11 +368,13 @@ async fn run_pipeline(attempt: PipelineAttempt) -> Result<(), PipelineError> {
         &mut tasks,
         PumpProgram::PumpSwap,
         ProgramSourceContext {
-            database: database.clone(),
             http,
             pubsub,
             batches: batch_sender,
             connections: connection_sender,
+            discovery_rpc_health: discovery_rpc_health_sender,
+            windows: observation_windows.clone(),
+            discovery_rpc,
             config: config.collector.clone(),
         },
         cancellation.child_token(),
@@ -387,9 +434,9 @@ async fn run_pipeline(attempt: PipelineAttempt) -> Result<(), PipelineError> {
     });
 
     let mut ready_sources = HashSet::new();
-    let mut gapped_sources = HashSet::new();
     let mut sources_ready_once = HashSet::new();
     let mut connection_failed = false;
+    let mut consecutive_discovery_rpc_failures = 0_u32;
     loop {
         tokio::select! {
             () = cancellation.cancelled() => {
@@ -409,39 +456,55 @@ async fn run_pipeline(attempt: PipelineAttempt) -> Result<(), PipelineError> {
                 match update.state {
                     SourceConnectionState::Ready => {
                         ready_sources.insert(update.source_program);
-                        gapped_sources.remove(&update.source_program);
-                        sources_ready_once.insert(update.source_program);
-                    }
-                    SourceConnectionState::ReadyWithGap => {
-                        ready_sources.insert(update.source_program);
-                        gapped_sources.insert(update.source_program);
                         sources_ready_once.insert(update.source_program);
                     }
                     SourceConnectionState::Disconnected => {
                         ready_sources.remove(&update.source_program);
                         connection_failed = true;
                     }
-                    SourceConnectionState::Connecting | SourceConnectionState::Recovering => {
+                    SourceConnectionState::Connecting => {
                         ready_sources.remove(&update.source_program);
                         if sources_ready_once.contains(&update.source_program) {
                             connection_failed = true;
                         }
                     }
                 }
-                status.send_replace(if ready_sources.contains(&SourceProgram::Pump)
-                    && ready_sources.contains(&SourceProgram::PumpSwap)
-                {
+                let all_sources_ready = ready_sources.contains(&SourceProgram::Pump)
+                    && ready_sources.contains(&SourceProgram::PumpSwap);
+                if all_sources_ready {
                     connection_failed = false;
-                    if gapped_sources.is_empty() {
-                        StreamStatus::Running
-                    } else {
-                        StreamStatus::Degraded
+                }
+                status.send_replace(stream_status(
+                    all_sources_ready,
+                    connection_failed,
+                    consecutive_discovery_rpc_failures,
+                ));
+            }
+            update = discovery_rpc_health_receiver.recv() => {
+                let Some(update) = update else {
+                    return finish_with_error(
+                        &status,
+                        &cancellation,
+                        &mut tasks,
+                        PipelineError::UnexpectedTaskExit("discovery-rpc-health-channel"),
+                    ).await;
+                };
+                consecutive_discovery_rpc_failures = match update {
+                    DiscoveryRpcHealthUpdate::Successful => 0,
+                    DiscoveryRpcHealthUpdate::Failed => {
+                        consecutive_discovery_rpc_failures.saturating_add(1)
                     }
-                } else if connection_failed {
-                    StreamStatus::Degraded
-                } else {
-                    StreamStatus::Starting
-                });
+                    DiscoveryRpcHealthUpdate::RateLimited => {
+                        DISCOVERY_RPC_FAILURES_BEFORE_DEGRADED
+                    }
+                };
+                let all_sources_ready = ready_sources.contains(&SourceProgram::Pump)
+                    && ready_sources.contains(&SourceProgram::PumpSwap);
+                status.send_replace(stream_status(
+                    all_sources_ready,
+                    connection_failed,
+                    consecutive_discovery_rpc_failures,
+                ));
             }
             joined = tasks.join_next() => {
                 let error = match joined {
@@ -453,6 +516,22 @@ async fn run_pipeline(attempt: PipelineAttempt) -> Result<(), PipelineError> {
                 return finish_with_error(&status, &cancellation, &mut tasks, error).await;
             }
         }
+    }
+}
+
+fn stream_status(
+    all_sources_ready: bool,
+    connection_failed: bool,
+    consecutive_discovery_rpc_failures: u32,
+) -> StreamStatus {
+    let discovery_rpc_degraded =
+        consecutive_discovery_rpc_failures >= DISCOVERY_RPC_FAILURES_BEFORE_DEGRADED;
+    if all_sources_ready && !discovery_rpc_degraded {
+        StreamStatus::Running
+    } else if connection_failed || discovery_rpc_degraded {
+        StreamStatus::Degraded
+    } else {
+        StreamStatus::Starting
     }
 }
 
@@ -499,8 +578,16 @@ async fn run_batch_processor(
     config: PipelineConfig,
 ) -> Result<(), PipelineError> {
     let mut recent_observations = VecDeque::<Instant>::new();
+    let pending_activity_maximum_hold = config
+        .collector
+        .maximum_discovery_age
+        .saturating_add(config.collector.request_timeout);
+    let mut pending_activity =
+        PendingActivityQueue::new(config.queue_capacity, pending_activity_maximum_hold);
     let mut current_flow = None;
     let mut flow_tick = tokio::time::interval(Duration::from_secs(1));
+    let mut pending_tick = tokio::time::interval(Duration::from_millis(100));
+    pending_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut storage_tick =
         tokio::time::interval(config.maintenance.interval.min(Duration::from_secs(5)));
     storage_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -525,20 +612,72 @@ async fn run_batch_processor(
                     }
                 }
             }
+            _ = pending_tick.tick() => {
+                for batch in pending_activity.drain_resolved(unix_time_millis()) {
+                    process_and_record_batch(
+                        &database,
+                        &markets,
+                        &discovery_wake,
+                        &config,
+                        &mut recent_observations,
+                        batch,
+                    ).await?;
+                }
+            }
             batch = batches.recv() => {
                 let Some(batch) = batch else {
                     return Err(PipelineError::UnexpectedTaskExit("collector-queue"));
                 };
-                let inserted = process_batch(&database, &markets, &batch, &config).await?;
-                for _ in 0..inserted {
-                    recent_observations.push_back(Instant::now());
+                match pending_activity.admit(batch, unix_time_millis()) {
+                    PendingActivityAdmission::Ready(batch) => {
+                        process_and_record_batch(
+                            &database,
+                            &markets,
+                            &discovery_wake,
+                            &config,
+                            &mut recent_observations,
+                            batch,
+                        ).await?;
+                    }
+                    PendingActivityAdmission::Deferred => {}
+                    PendingActivityAdmission::Dropped => {
+                        tracing::warn!(
+                            capacity = config.queue_capacity,
+                            "dropped provisional activity because its bounded holding queue is full"
+                        );
+                    }
                 }
-                if inserted > 0 {
-                    discovery_wake.notify_one();
+                for batch in pending_activity.drain_resolved(unix_time_millis()) {
+                    process_and_record_batch(
+                        &database,
+                        &markets,
+                        &discovery_wake,
+                        &config,
+                        &mut recent_observations,
+                        batch,
+                    ).await?;
                 }
             }
         }
     }
+}
+
+async fn process_and_record_batch(
+    database: &Database,
+    markets: &MarketRegistry,
+    discovery_wake: &Notify,
+    config: &PipelineConfig,
+    recent_observations: &mut VecDeque<Instant>,
+    batch: ProgramLogBatch,
+) -> Result<(), PipelineError> {
+    let inserted = process_batch(database, markets, &batch, config).await?;
+    for _ in 0..inserted {
+        recent_observations.push_back(Instant::now());
+    }
+    if inserted > 0 {
+        discovery_wake.notify_one();
+    }
+    Ok(())
 }
 
 async fn process_batch(
@@ -547,26 +686,49 @@ async fn process_batch(
     batch: &ProgramLogBatch,
     config: &PipelineConfig,
 ) -> Result<usize, PipelineError> {
-    let source_program = batch.program.source_program();
     let mut inserted = 0_usize;
 
     if batch.transaction_error.is_none() {
-        let decoded_batch = decode_batch_events(batch)?;
-        for quarantine in decoded_batch.quarantines {
-            record_pipeline_quarantine(
-                database,
-                config.collector.network,
-                source_program,
-                quarantine.coordinate,
-                quarantine.reason_code,
-                quarantine.reason_detail,
-                &quarantine.raw_evidence,
-            )
-            .await?;
+        let mut decoded_events = Vec::new();
+        for program in PUMP_PROGRAMS {
+            let decoded_batch = decode_batch_events(batch, program)?;
+            for quarantine in decoded_batch.quarantines {
+                record_pipeline_quarantine(
+                    database,
+                    config.collector.network,
+                    program.source_program(),
+                    quarantine.coordinate,
+                    quarantine.reason_code,
+                    quarantine.reason_detail,
+                    &quarantine.raw_evidence,
+                )
+                .await?;
+            }
+            decoded_events.extend(decoded_batch.events);
         }
+        decoded_events.sort_by_key(|event| {
+            let program_order = match event.decoded.program {
+                PumpProgram::Pump => 0_u8,
+                PumpProgram::PumpSwap => 1_u8,
+            };
+            (
+                !is_discovery_event(&event.decoded.event),
+                program_order,
+                event.decoded.coordinate.instruction_index,
+                event.decoded.coordinate.event_index,
+            )
+        });
 
-        for event in decoded_batch.events {
+        for event in decoded_events {
             let decoded = event.decoded;
+            if !batch_selects_event(
+                batch,
+                &decoded.event,
+                config.collector.maximum_discovery_age,
+            ) {
+                continue;
+            }
+            let source_program = decoded.program.source_program();
             let coordinate = decoded.coordinate.clone();
             let retire_pump_mint = match &decoded.event {
                 PumpEvent::Complete(event) => Some(event.mint.clone()),
@@ -642,7 +804,22 @@ async fn process_batch(
                 database.upsert_pump_swap_pool(&pool).await?;
             }
             if let Some(market) = normalized.discovered_market {
-                markets.register(market)?;
+                markets.register(market.clone())?;
+                let target = soldisco_discovery_engine::ObservationTarget::for_market(&market);
+                if let Some(token) = target.and_then(|target| {
+                    batch
+                        .window_tokens
+                        .iter()
+                        .find(|token| token.target() == &target)
+                }) && token.confirm()
+                {
+                    let window = token.snapshot();
+                    tracing::debug!(
+                        mint = %window.mint,
+                        closes_at_unix_ms = window.closes_at_unix_ms,
+                        "confirmed bounded post-discovery observation window"
+                    );
+                }
             }
             if let Some(mint) = retire_pump_mint {
                 markets.retire_pump_market(&mint)?;
@@ -650,17 +827,42 @@ async fn process_batch(
         }
     }
 
-    database
-        .save_recovery_checkpoint(&RecoveryCheckpoint {
-            network: config.collector.network,
-            source_program,
-            checkpoint_kind: CHECKPOINT_KIND.to_owned(),
-            last_slot: batch.slot,
-            last_transaction_index: batch.transaction_index,
-            last_signature: batch.signature.clone(),
-        })
-        .await?;
+    if batch.purpose == BatchPurpose::Discovery {
+        for token in &batch.window_tokens {
+            token.cancel_if_pending();
+        }
+    }
+
     Ok(inserted)
+}
+
+fn batch_selects_event(
+    batch: &ProgramLogBatch,
+    event: &PumpEvent,
+    maximum_discovery_age: Duration,
+) -> bool {
+    match batch.purpose {
+        BatchPurpose::Discovery => {
+            let selected_discovery = discovery_seed(event).is_some_and(|seed| {
+                batch.window_tokens.iter().any(|token| {
+                    token.target() == &seed.target && token.is_open_at(batch.received_time_unix_ms)
+                })
+            }) && discovery_event_is_fresh(
+                event,
+                batch.received_time_unix_ms,
+                maximum_discovery_age,
+            );
+            selected_discovery
+                || event_matches_confirmed_window(
+                    event,
+                    &batch.window_tokens,
+                    batch.received_time_unix_ms,
+                )
+        }
+        BatchPurpose::TrackedActivity => {
+            event_matches_confirmed_window(event, &batch.window_tokens, batch.received_time_unix_ms)
+        }
+    }
 }
 
 async fn record_pipeline_quarantine(
@@ -691,7 +893,7 @@ async fn record_pipeline_quarantine(
         %signature,
         reason_code,
         occurrences,
-        "quarantined Pump source evidence before advancing its checkpoint"
+        "quarantined Pump source evidence"
     );
     Ok(())
 }
@@ -714,8 +916,11 @@ struct DecodedBatch {
     quarantines: Vec<QuarantinedEvidence>,
 }
 
-fn decode_batch_events(batch: &ProgramLogBatch) -> Result<DecodedBatch, PipelineError> {
-    let program_id = batch.program.program_id();
+fn decode_batch_events(
+    batch: &ProgramLogBatch,
+    program: PumpProgram,
+) -> Result<DecodedBatch, PipelineError> {
+    let program_id = program.program_id();
     let mut cpi_event_indexes = BTreeMap::<u16, u16>::new();
     let mut cpi_events = Vec::new();
     let mut quarantines = Vec::new();
@@ -870,21 +1075,32 @@ fn prune_flow(observations: &mut VecDeque<Instant>) {
     }
 }
 
+fn unix_time_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .unwrap_or(i64::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::VecDeque, time::Duration};
 
     use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use soldisco_discovery_engine::ObservationWindowRegistry;
+    use soldisco_domain::ChainCoordinate;
     use soldisco_solana_rpc::TransactionInstructionRecord;
     use soldisco_source_pump::{
-        ANCHOR_EVENT_CPI_DISCRIMINATOR, COMPLETE_EVENT_DISCRIMINATOR, PUMP_PROGRAM_ID, PumpEvent,
-        PumpProgram,
+        ANCHOR_EVENT_CPI_DISCRIMINATOR, COMPLETE_EVENT_DISCRIMINATOR, CREATE_EVENT_DISCRIMINATOR,
+        PUMP_PROGRAM_ID, PumpEvent, PumpProgram, decode_anchor_event,
     };
 
     use super::{
-        PIPELINE_RESTART_MAX_DELAY, PipelineError, ProgramLogBatch, SOLANA_DEVNET_GENESIS_HASH,
-        SOLANA_MAINNET_GENESIS_HASH, decode_batch_events, next_restart_delay,
-        pipeline_error_is_retryable, prune_flow,
+        BatchPurpose, DISCOVERY_RPC_FAILURES_BEFORE_DEGRADED, PIPELINE_RESTART_MAX_DELAY,
+        PipelineError, ProgramLogBatch, SOLANA_DEVNET_GENESIS_HASH, SOLANA_MAINNET_GENESIS_HASH,
+        batch_selects_event, decode_batch_events, next_restart_delay, pipeline_error_is_retryable,
+        prune_flow, stream_status,
     };
     use crate::jobs::maintenance::MaintenanceError;
 
@@ -898,12 +1114,51 @@ mod tests {
         bytes
     }
 
+    fn push_string(bytes: &mut Vec<u8>, value: &str) {
+        bytes.extend(
+            u32::try_from(value.len())
+                .expect("fixture string fits in u32")
+                .to_le_bytes(),
+        );
+        bytes.extend(value.as_bytes());
+    }
+
+    fn create_event_bytes(timestamp: i64) -> Vec<u8> {
+        let mut bytes = CREATE_EVENT_DISCRIMINATOR.to_vec();
+        push_string(&mut bytes, "Fixture Coin");
+        push_string(&mut bytes, "FIX");
+        push_string(&mut bytes, "https://example.invalid/fixture.json");
+        for marker in [2_u8, 3, 1, 5] {
+            bytes.extend([marker; 32]);
+        }
+        bytes.extend(timestamp.to_le_bytes());
+        for value in 1_u64..=4 {
+            bytes.extend((value * 1_000).to_le_bytes());
+        }
+        bytes.extend([6_u8; 32]);
+        bytes.push(0);
+        bytes.push(0);
+        bytes.extend([4_u8; 32]);
+        bytes.extend(5_000_u64.to_le_bytes());
+        bytes
+    }
+
+    fn coordinate(event_index: u16) -> ChainCoordinate {
+        ChainCoordinate {
+            slot: 42,
+            transaction_index: Some(3),
+            signature: "signature".to_owned(),
+            instruction_index: 0,
+            event_index,
+        }
+    }
+
     fn batch(
         instructions: Vec<TransactionInstructionRecord>,
         direct_event: Vec<u8>,
     ) -> ProgramLogBatch {
         ProgramLogBatch {
-            program: PumpProgram::Pump,
+            purpose: BatchPurpose::TrackedActivity,
             slot: 42,
             transaction_index: Some(3),
             signature: "signature".to_owned(),
@@ -915,6 +1170,7 @@ mod tests {
                 format!("Program {PUMP_PROGRAM_ID} success"),
             ],
             transaction_error: None,
+            window_tokens: Vec::new(),
         }
     }
 
@@ -936,6 +1192,68 @@ mod tests {
             next_restart_delay(PIPELINE_RESTART_MAX_DELAY),
             PIPELINE_RESTART_MAX_DELAY
         );
+    }
+
+    #[test]
+    fn discovery_rpc_failures_degrade_and_success_recovers_stream_status() {
+        assert_eq!(
+            stream_status(true, false, 0),
+            soldisco_api_contracts::StreamStatus::Running
+        );
+        assert_eq!(
+            stream_status(true, false, DISCOVERY_RPC_FAILURES_BEFORE_DEGRADED),
+            soldisco_api_contracts::StreamStatus::Degraded
+        );
+        assert_eq!(
+            stream_status(false, false, 0),
+            soldisco_api_contracts::StreamStatus::Starting
+        );
+    }
+
+    #[test]
+    fn discovery_confirmation_admits_same_transaction_activity() {
+        let received_at = 1_720_000_001_000_i64;
+        let create = decode_anchor_event(
+            PUMP_PROGRAM_ID,
+            coordinate(0),
+            &create_event_bytes(1_720_000_000),
+        )
+        .expect("create fixture");
+        let complete =
+            decode_anchor_event(PUMP_PROGRAM_ID, coordinate(1), &complete_event_bytes(1))
+                .expect("matching lifecycle fixture");
+        let seed = super::discovery_seed(&create.event).expect("discovery target");
+        let windows = ObservationWindowRegistry::new(4);
+        let provision =
+            windows.provision_target(seed.target, seed.mint, received_at, Duration::from_secs(5));
+        let batch = ProgramLogBatch {
+            purpose: BatchPurpose::Discovery,
+            slot: 42,
+            transaction_index: Some(3),
+            signature: "signature".to_owned(),
+            received_time_unix_ms: received_at,
+            instructions: Vec::new(),
+            log_messages: Vec::new(),
+            transaction_error: None,
+            window_tokens: vec![provision.token.clone()],
+        };
+
+        assert!(batch_selects_event(
+            &batch,
+            &create.event,
+            Duration::from_secs(5)
+        ));
+        assert!(!batch_selects_event(
+            &batch,
+            &complete.event,
+            Duration::from_secs(5)
+        ));
+        assert!(provision.token.confirm());
+        assert!(batch_selects_event(
+            &batch,
+            &complete.event,
+            Duration::from_secs(5)
+        ));
     }
 
     #[test]
@@ -967,16 +1285,19 @@ mod tests {
     fn authoritative_cpi_event_replaces_its_direct_log_copy() {
         let mut cpi_data = ANCHOR_EVENT_CPI_DISCRIMINATOR.to_vec();
         cpi_data.extend(complete_event_bytes(1));
-        let decoded = decode_batch_events(&batch(
-            vec![TransactionInstructionRecord {
-                outer_instruction_index: 0,
-                inner_instruction_index: Some(2),
-                stack_height: Some(2),
-                program_id: PUMP_PROGRAM_ID.to_owned(),
-                data: cpi_data,
-            }],
-            complete_event_bytes(1),
-        ))
+        let decoded = decode_batch_events(
+            &batch(
+                vec![TransactionInstructionRecord {
+                    outer_instruction_index: 0,
+                    inner_instruction_index: Some(2),
+                    stack_height: Some(2),
+                    program_id: PUMP_PROGRAM_ID.to_owned(),
+                    data: cpi_data,
+                }],
+                complete_event_bytes(1),
+            ),
+            PumpProgram::Pump,
+        )
         .expect("current CPI event should decode");
         let events = decoded.events;
 
@@ -990,7 +1311,7 @@ mod tests {
     #[test]
     fn direct_program_data_is_used_when_instruction_has_no_cpi_event() {
         let evidence = complete_event_bytes(1);
-        let decoded = decode_batch_events(&batch(Vec::new(), evidence.clone()))
+        let decoded = decode_batch_events(&batch(Vec::new(), evidence.clone()), PumpProgram::Pump)
             .expect("current direct program-data event should decode");
         let events = decoded.events;
 
@@ -1005,16 +1326,19 @@ mod tests {
     fn a_distinct_direct_event_survives_alongside_a_cpi_event() {
         let mut cpi_data = ANCHOR_EVENT_CPI_DISCRIMINATOR.to_vec();
         cpi_data.extend(complete_event_bytes(1));
-        let decoded = decode_batch_events(&batch(
-            vec![TransactionInstructionRecord {
-                outer_instruction_index: 0,
-                inner_instruction_index: Some(2),
-                stack_height: Some(2),
-                program_id: PUMP_PROGRAM_ID.to_owned(),
-                data: cpi_data,
-            }],
-            complete_event_bytes(10),
-        ))
+        let decoded = decode_batch_events(
+            &batch(
+                vec![TransactionInstructionRecord {
+                    outer_instruction_index: 0,
+                    inner_instruction_index: Some(2),
+                    stack_height: Some(2),
+                    program_id: PUMP_PROGRAM_ID.to_owned(),
+                    data: cpi_data,
+                }],
+                complete_event_bytes(10),
+            ),
+            PumpProgram::Pump,
+        )
         .expect("mixed direct and CPI events should decode");
         let events = decoded.events;
 
@@ -1027,9 +1351,11 @@ mod tests {
 
     #[test]
     fn malformed_known_event_is_quarantined_without_poisoning_the_batch() {
-        let decoded =
-            decode_batch_events(&batch(Vec::new(), COMPLETE_EVENT_DISCRIMINATOR.to_vec()))
-                .expect("malformed evidence should be isolated");
+        let decoded = decode_batch_events(
+            &batch(Vec::new(), COMPLETE_EVENT_DISCRIMINATOR.to_vec()),
+            PumpProgram::Pump,
+        )
+        .expect("malformed evidence should be isolated");
 
         assert!(decoded.events.is_empty());
         assert_eq!(decoded.quarantines.len(), 1);

@@ -11,7 +11,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::error;
 
 use crate::{
-    jobs::pipeline::{PipelineConfig, PipelineError, SpawnedPipeline, spawn_pipeline},
+    jobs::{
+        discovery_rpc::DiscoveryRpcGate,
+        pipeline::{PipelineConfig, PipelineError, SpawnedPipeline, spawn_pipeline},
+    },
     state::LiveEventBus,
 };
 
@@ -22,6 +25,7 @@ pub struct StreamSupervisor {
     status: Arc<RwLock<StreamStatus>>,
     shutdown: CancellationToken,
     pipeline_config: PipelineConfig,
+    discovery_rpc: DiscoveryRpcGate,
     start_timeout: std::time::Duration,
     command_lock: Arc<Mutex<()>>,
     running: Arc<Mutex<Option<RunningPipeline>>>,
@@ -56,6 +60,7 @@ impl StreamSupervisor {
         } else {
             StreamStatus::Stopped
         };
+        let discovery_rpc = pipeline_config.discovery_rpc_gate();
 
         Ok(Self {
             database,
@@ -63,6 +68,7 @@ impl StreamSupervisor {
             status: Arc::new(RwLock::new(status)),
             shutdown: CancellationToken::new(),
             pipeline_config,
+            discovery_rpc,
             start_timeout,
             command_lock: Arc::new(Mutex::new(())),
             running: Arc::new(Mutex::new(None)),
@@ -159,6 +165,7 @@ impl StreamSupervisor {
             self.database.clone(),
             self.events.clone(),
             self.pipeline_config.clone(),
+            self.discovery_rpc.clone(),
         )
         .await
         {

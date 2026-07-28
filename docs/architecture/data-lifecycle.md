@@ -23,30 +23,40 @@ decoder version remains visible because later performance is conditional on
 the observable universe and interpretation that produced it. Qualification
 rule versions join that provenance when qualification is implemented.
 
-## Live intake and recovery
+## Live-first intake
 
 The Pump/PumpSwap collector uses Solana WebSocket PubSub for low-latency live
-activity. PubSub is not a completeness guarantee. The server persists an
-observed-through checkpoint and uses Solana HTTP RPC to retrieve missed
-transactions after disconnects, server downtime, or ambiguous delivery.
+activity. PubSub is not a completeness guarantee, and this milestone chooses
+latency over catch-up:
 
-Live and recovered observations use the same chain identity and normalization
-rules so deterministic deduplication can merge them. Recovery advances a
-checkpoint only after the relevant facts and durable downstream work have been
-committed.
+- failed notifications are discarded before HTTP
+- only direct fresh Pump creation and PumpSwap pool-creation logs are eligible
+  for `getTransaction`
+- within one running server process, duplicate Pump/PumpSwap subscription
+  delivery shares one signature claim for the full freshness horizon
+- each selected signature receives at most one globally paced HTTP attempt in
+  that process
+- a discovery that ages out while waiting for request admission is skipped
+  without HTTP
+- stale, unavailable, timed-out, rate-limited, or invalid responses are skipped
+- a provider rate-limit response delays later distinct signatures but never
+  retries the failed signature
+- a disconnected source reconnects at the current head with no historical
+  `getSignaturesForAddress` scan
 
-Recovery is deliberately bounded. If the durable checkpoint is no longer
-reachable within that bound, Soldisco records a durable collection-gap entry,
-releases the already-open live subscription, and reports `DEGRADED`. The gap is
-never silently deleted by retention and can later be marked resolved through an
-explicit future recovery path. Attributable malformed event, program-data, or
-log-scope evidence is instead written to deduplicated intake quarantine with
-decoder version, reason, coordinate, and bounded evidence; the checkpoint can
-then advance without a permanent poison pill. Unknown discriminators are
-ignored rather than treated as candidates. A structurally attributable
-historical fact whose exact market or quote cannot be resolved also receives a
-durable quarantine disposition before checkpoint advance. That evidence is not
-automatically reprocessed in this milestone.
+Accepted facts still use exact chain identity and deterministic deduplication.
+Attributable malformed event, program-data, or log-scope evidence that reaches
+the authoritative decoder is written to deduplicated intake quarantine with
+decoder version, reason, coordinate, and bounded evidence. Unknown
+discriminators are ignored rather than treated as candidates. A structurally
+attributable fact whose exact market or quote cannot be resolved also receives
+a durable quarantine disposition. That evidence is not automatically
+reprocessed in this milestone.
+
+Existing checkpoint, recovery, and collection-gap schemas are retained as
+reserved infrastructure. The live-first collector neither reads nor advances
+those exact-history checkpoints. A future recovery mode must be explicit and
+must not imply that a live-first interval was complete.
 
 ## Persistence and correction
 
@@ -85,10 +95,8 @@ The limit measures `pg_database_size`, not remaining filesystem capacity, WAL,
 other databases, Docker storage, or build artifacts. Local operation still
 requires independent free-space monitoring. Current market and discovery
 aggregates remain durable so later trades can resolve exact venue identity;
-they are not yet archived or expired. Before unfiltered collection can run
-indefinitely, a bounded active-market cache must be backed by durable lookup,
-and aggregate expiry or archival must be defined without orphaning later
-events.
+they are not yet archived or expired. Before collection can run indefinitely,
+aggregate expiry or archival must be defined without orphaning later events.
 
 ## Venue identity and Raydium enrichment
 
@@ -109,7 +117,51 @@ A missing Raydium pool is an explicit unavailable observation. It does not
 become a rejection unless the active, versioned rule requires Raydium evidence.
 Scanning arbitrary Raydium-only mints is not part of the initial intake.
 
-## Candidate windows
+## Pre-decision observation windows
+
+Each fresh direct Pump token-creation or PumpSwap pool-creation log opens one
+short, non-extending provisional in-memory window immediately at receipt. This
+lets activity arriving during the one-shot HTTP read retain its receipt-time
+membership. The token becomes confirmed only after the authoritative discovery
+normalizes and persists; a missing, failed, stale, invalid, or rate-limited
+read cancels the provisional token and invalidates already queued activity.
+Creation plus initial activity in the same authoritative transaction is
+processed discovery-first. While confirmed, the collector decodes matching
+Pump mint or PumpSwap pool activity directly from the two existing global
+PubSub feeds and persists those trade/lifecycle facts without
+`getTransaction`.
+
+WebSocket notification work is bounded separately from HTTP concurrency, so a
+few paced or slow discovery reads do not immediately stop socket polling.
+Activity that reaches the processor while its token is still provisional waits
+in a bounded holding queue. Confirmation or cancellation releases it. A
+separate holding deadline, derived from the discovery-age allowance plus the
+HTTP timeout, can also release it for deterministic drop without cancelling
+the discovery globally. This preserves valid receipt-time activity when the
+observation window closes while its one-shot read is still resolving. If that
+queue reaches its configured capacity, newer provisional activity is dropped
+and logged rather than allowing unbounded memory growth.
+
+Window expiration stops further activity intake for that market. A replayed
+creation does not extend the close time, and capacity pressure deterministically
+evicts the soonest-closing window. Window membership is based on the time a
+notification is admitted into available collector work capacity, not delayed
+HTTP or processor completion time. If that bounded capacity is saturated,
+socket-buffered notifications are timestamped only when capacity becomes
+available and can consequently fail the freshness check. The current registry
+is intentionally ephemeral: stream stop/start, a supervised pipeline-attempt
+restart, or a server restart drops open windows and does not backfill them.
+Capacity eviction also truncates evidence without a durable completeness
+marker. Persisted activity gathered before any interruption remains valid but
+incomplete. These windows gather inputs only; they do not pass, reject, score,
+or approve a token.
+
+The direct-log prefilter intentionally does not spend HTTP capacity on a
+transaction whose qualifying creation is visible only through Anchor event
+CPI instruction data. Once a direct creation qualifies and its transaction is
+fetched, supported direct and CPI evidence for both Pump programs is decoded.
+
+## Future approved-candidate windows
 
 A future approved candidate can open a versioned monitoring window with:
 

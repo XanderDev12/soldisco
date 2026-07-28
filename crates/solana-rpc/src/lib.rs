@@ -1,8 +1,8 @@
 //! Provider-neutral Solana reads plus concrete standard JSON-RPC adapters.
 //!
-//! HTTP is authoritative for transaction recovery and account reads. WebSocket
-//! PubSub lowers discovery latency, but reconnect/backfill orchestration remains
-//! the server supervisor's responsibility.
+//! HTTP provides authoritative point reads and reserved explicit-recovery
+//! primitives. WebSocket PubSub lowers discovery latency. The current
+//! live-first server reconnects at the head without historical backfill.
 
 mod http;
 mod model;

@@ -6,14 +6,17 @@ TypeScript, and Tailwind's CSS toolchain.
 
 ## Current behavior
 
-- Starts with an empty, approved-only discovery feed until a source and
-  deterministic screen are connected.
-- Shows pending, approved, rejected, and flow-rate counters plus a compact
-  rejection-reason log without placing failed candidates in the main feed.
+- Connects to the local Rust server through versioned HTTP commands and
+  snapshots plus named `soldisco` SSE invalidations.
+- Shows the current `OBSERVE_ALL` stream of structurally valid Pump/PumpSwap
+  discoveries and their directly tracked venue activity. This is not yet an
+  approved-only feed.
+- Shows truthful observed, pending, approved, rejected, and flow-rate counters;
+  deterministic rejection data remains empty until that engine exists.
 - Provides accessible views for discovery, positions, orders, alerts,
   strategies, replays, and local controls.
-- Includes a session-local start/stop control that never claims a discovery
-  source is connected.
+- Includes locally guarded start/stop controls derived from the supervised
+  backend stream state, including degraded and transitional states.
 - Separates deterministic first-pass status, risk value, discovery rating, and
   strategy match.
 - Includes an inspector with overview, risk, signal, trade, and position views.
@@ -22,8 +25,9 @@ TypeScript, and Tailwind's CSS toolchain.
 - Keeps Paper and Live trading views distinct: Paper records simulated entry
   and exit prices without wallet controls, while Live alone exposes
   wallet-dependent actions. Neither mode enables execution yet.
-- Does not yet call the local Rust API, Pump/PumpSwap, Raydium, a Solana RPC
-  provider, a wallet, a quote service, or a transaction service.
+- Never calls Solana or PostgreSQL directly. Raydium enrichment, deterministic
+  screening, wallet connectivity, quotes, signing, and transaction submission
+  are not connected yet.
 
 ## Run locally
 
@@ -71,9 +75,7 @@ modules rather than folded into the orchestration shell.
 
 ## Next milestone
 
-Connect the empty dashboard to the local Rust server through HTTP commands and
-an SSE projection stream after the Pump/PumpSwap collector, durable PostgreSQL
-ingestion, recovery, and initial deterministic gate exist. Raydium can provide
-optional post-Pump venue enrichment for mints with relevant pools. Wallet
-connectivity, quotes, signing, and transaction submission remain separate later
-milestones.
+Add rolling qualification and the first versioned deterministic safety gate to
+the connected Pump/PumpSwap discovery slice. Raydium can then provide optional
+post-Pump venue enrichment for mints with relevant pools. Wallet connectivity,
+quotes, signing, and transaction submission remain separate later milestones.

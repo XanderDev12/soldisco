@@ -5,9 +5,13 @@ import reactHooks from "eslint-plugin-react-hooks";
 export default defineConfig([
   globalIgnores([
     ".next/**",
+    "apps/web/.next/**",
     ".open-next/**",
+    "apps/web/.open-next/**",
     ".wrangler/**",
+    "apps/web/.wrangler/**",
     "dist/**",
+    "apps/web/dist/**",
     "node_modules/**",
     "out/**",
     "next-env.d.ts",

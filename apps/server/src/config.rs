@@ -25,14 +25,16 @@ const DEFAULT_SOLANA_NETWORK: &str = "mainnet";
 const DEFAULT_SOLANA_RPC_HTTP_URL: &str = "https://api.mainnet-beta.solana.com";
 const DEFAULT_SOLANA_RPC_WS_URL: &str = "wss://api.mainnet-beta.solana.com";
 const DEFAULT_SOLANA_COMMITMENT: &str = "confirmed";
-const DEFAULT_SOLANA_REQUEST_TIMEOUT_MS: &str = "10000";
+const DEFAULT_SOLANA_REQUEST_TIMEOUT_MS: &str = "5000";
 const DEFAULT_SOLANA_RECONNECT_DELAY_MS: &str = "1000";
-const DEFAULT_SOLANA_RPC_MAX_IN_FLIGHT: &str = "16";
-const DEFAULT_SOLANA_LIVE_FETCH_MAX_ATTEMPTS: &str = "5";
+const DEFAULT_SOLANA_RPC_MAX_IN_FLIGHT: &str = "4";
+const DEFAULT_SOLANA_DISCOVERY_RPC_REQUESTS_PER_SECOND: &str = "1";
+const DEFAULT_SOLANA_DISCOVERY_RPC_RATE_LIMIT_COOLDOWN_MS: &str = "5000";
 const DEFAULT_SOLANA_SUBSCRIPTION_IDLE_TIMEOUT_MS: &str = "30000";
+const DEFAULT_DISCOVERY_MAX_EVENT_AGE_MS: &str = "15000";
+const DEFAULT_DISCOVERY_OBSERVATION_WINDOW_MS: &str = "60000";
+const DEFAULT_DISCOVERY_MAX_ACTIVE_WINDOWS: &str = "128";
 const DEFAULT_COLLECTOR_QUEUE_CAPACITY: &str = "2048";
-const DEFAULT_RECOVERY_PAGE_SIZE: &str = "100";
-const DEFAULT_RECOVERY_MAX_RECORDS: &str = "5000";
 const DEFAULT_STREAM_START_TIMEOUT_MS: &str = "20000";
 
 #[derive(Clone)]
@@ -57,11 +59,13 @@ pub struct Config {
     pub solana_request_timeout: Duration,
     pub solana_reconnect_delay: Duration,
     pub solana_rpc_max_in_flight: usize,
-    pub solana_live_fetch_max_attempts: usize,
+    pub solana_discovery_rpc_requests_per_second: u32,
+    pub solana_discovery_rpc_rate_limit_cooldown: Duration,
     pub solana_subscription_idle_timeout: Duration,
+    pub discovery_max_event_age: Duration,
+    pub discovery_observation_window: Duration,
+    pub discovery_max_active_windows: usize,
     pub collector_queue_capacity: usize,
-    pub recovery_page_size: usize,
-    pub recovery_max_records: usize,
     pub stream_start_timeout: Duration,
 }
 
@@ -96,16 +100,27 @@ impl std::fmt::Debug for Config {
             .field("solana_reconnect_delay", &self.solana_reconnect_delay)
             .field("solana_rpc_max_in_flight", &self.solana_rpc_max_in_flight)
             .field(
-                "solana_live_fetch_max_attempts",
-                &self.solana_live_fetch_max_attempts,
+                "solana_discovery_rpc_requests_per_second",
+                &self.solana_discovery_rpc_requests_per_second,
+            )
+            .field(
+                "solana_discovery_rpc_rate_limit_cooldown",
+                &self.solana_discovery_rpc_rate_limit_cooldown,
             )
             .field(
                 "solana_subscription_idle_timeout",
                 &self.solana_subscription_idle_timeout,
             )
+            .field("discovery_max_event_age", &self.discovery_max_event_age)
+            .field(
+                "discovery_observation_window",
+                &self.discovery_observation_window,
+            )
+            .field(
+                "discovery_max_active_windows",
+                &self.discovery_max_active_windows,
+            )
             .field("collector_queue_capacity", &self.collector_queue_capacity)
-            .field("recovery_page_size", &self.recovery_page_size)
-            .field("recovery_max_records", &self.recovery_max_records)
             .field("stream_start_timeout", &self.stream_start_timeout)
             .finish()
     }
@@ -186,24 +201,41 @@ impl Config {
             "SOLANA_RPC_MAX_IN_FLIGHT",
             DEFAULT_SOLANA_RPC_MAX_IN_FLIGHT,
         );
-        let solana_live_fetch_max_attempts = value_or(
+        let solana_discovery_rpc_requests_per_second = value_or(
             &get,
-            "SOLANA_LIVE_FETCH_MAX_ATTEMPTS",
-            DEFAULT_SOLANA_LIVE_FETCH_MAX_ATTEMPTS,
+            "SOLANA_DISCOVERY_RPC_REQUESTS_PER_SECOND",
+            DEFAULT_SOLANA_DISCOVERY_RPC_REQUESTS_PER_SECOND,
+        );
+        let solana_discovery_rpc_rate_limit_cooldown_ms = value_or(
+            &get,
+            "SOLANA_DISCOVERY_RPC_RATE_LIMIT_COOLDOWN_MS",
+            DEFAULT_SOLANA_DISCOVERY_RPC_RATE_LIMIT_COOLDOWN_MS,
         );
         let solana_subscription_idle_timeout_ms = value_or(
             &get,
             "SOLANA_SUBSCRIPTION_IDLE_TIMEOUT_MS",
             DEFAULT_SOLANA_SUBSCRIPTION_IDLE_TIMEOUT_MS,
         );
+        let discovery_max_event_age_ms = value_or(
+            &get,
+            "DISCOVERY_MAX_EVENT_AGE_MS",
+            DEFAULT_DISCOVERY_MAX_EVENT_AGE_MS,
+        );
+        let discovery_observation_window_ms = value_or(
+            &get,
+            "DISCOVERY_OBSERVATION_WINDOW_MS",
+            DEFAULT_DISCOVERY_OBSERVATION_WINDOW_MS,
+        );
+        let discovery_max_active_windows = value_or(
+            &get,
+            "DISCOVERY_MAX_ACTIVE_WINDOWS",
+            DEFAULT_DISCOVERY_MAX_ACTIVE_WINDOWS,
+        );
         let collector_queue_capacity = value_or(
             &get,
             "COLLECTOR_QUEUE_CAPACITY",
             DEFAULT_COLLECTOR_QUEUE_CAPACITY,
         );
-        let recovery_page_size = value_or(&get, "RECOVERY_PAGE_SIZE", DEFAULT_RECOVERY_PAGE_SIZE);
-        let recovery_max_records =
-            value_or(&get, "RECOVERY_MAX_RECORDS", DEFAULT_RECOVERY_MAX_RECORDS);
         let stream_start_timeout_ms = value_or(
             &get,
             "STREAM_START_TIMEOUT_MS",
@@ -362,35 +394,50 @@ impl Config {
             1,
             128,
         )?;
-        let solana_live_fetch_max_attempts = parse_bounded_usize(
-            "SOLANA_LIVE_FETCH_MAX_ATTEMPTS",
-            &solana_live_fetch_max_attempts,
+        let solana_discovery_rpc_requests_per_second = parse_bounded_u64(
+            "SOLANA_DISCOVERY_RPC_REQUESTS_PER_SECOND",
+            &solana_discovery_rpc_requests_per_second,
             1,
-            20,
+            1_000,
+        )
+        .and_then(|value| {
+            u32::try_from(value).map_err(|_| ConfigError::Invalid {
+                name: "SOLANA_DISCOVERY_RPC_REQUESTS_PER_SECOND",
+                reason: "value is outside the supported range",
+            })
+        })?;
+        let solana_discovery_rpc_rate_limit_cooldown = parse_bounded_millisecond_duration(
+            "SOLANA_DISCOVERY_RPC_RATE_LIMIT_COOLDOWN_MS",
+            &solana_discovery_rpc_rate_limit_cooldown_ms,
+            100,
+            300_000,
         )?;
         let solana_subscription_idle_timeout = parse_positive_duration(
             "SOLANA_SUBSCRIPTION_IDLE_TIMEOUT_MS",
             &solana_subscription_idle_timeout_ms,
         )?;
-        let collector_queue_capacity =
-            collector_queue_capacity
-                .parse::<usize>()
-                .map_err(|_| ConfigError::Invalid {
-                    name: "COLLECTOR_QUEUE_CAPACITY",
-                    reason: "expected a positive integer",
-                })?;
-        if collector_queue_capacity == 0 {
-            return Err(ConfigError::Invalid {
-                name: "COLLECTOR_QUEUE_CAPACITY",
-                reason: "must be at least one",
-            });
-        }
-        let recovery_page_size =
-            parse_bounded_usize("RECOVERY_PAGE_SIZE", &recovery_page_size, 1, 1_000)?;
-        let recovery_max_records = parse_bounded_usize(
-            "RECOVERY_MAX_RECORDS",
-            &recovery_max_records,
-            recovery_page_size,
+        let discovery_max_event_age = parse_bounded_millisecond_duration(
+            "DISCOVERY_MAX_EVENT_AGE_MS",
+            &discovery_max_event_age_ms,
+            1_000,
+            300_000,
+        )?;
+        let discovery_observation_window = parse_bounded_millisecond_duration(
+            "DISCOVERY_OBSERVATION_WINDOW_MS",
+            &discovery_observation_window_ms,
+            1_000,
+            3_600_000,
+        )?;
+        let discovery_max_active_windows = parse_bounded_usize(
+            "DISCOVERY_MAX_ACTIVE_WINDOWS",
+            &discovery_max_active_windows,
+            1,
+            100_000,
+        )?;
+        let collector_queue_capacity = parse_bounded_usize(
+            "COLLECTOR_QUEUE_CAPACITY",
+            &collector_queue_capacity,
+            1,
             100_000,
         )?;
         let stream_start_timeout =
@@ -417,11 +464,13 @@ impl Config {
             solana_request_timeout,
             solana_reconnect_delay,
             solana_rpc_max_in_flight,
-            solana_live_fetch_max_attempts,
+            solana_discovery_rpc_requests_per_second,
+            solana_discovery_rpc_rate_limit_cooldown,
             solana_subscription_idle_timeout,
+            discovery_max_event_age,
+            discovery_observation_window,
+            discovery_max_active_windows,
             collector_queue_capacity,
-            recovery_page_size,
-            recovery_max_records,
             stream_start_timeout,
         })
     }
@@ -556,14 +605,25 @@ mod tests {
             std::time::Duration::from_secs(24 * 60 * 60)
         );
         assert_eq!(config.retention_batch_size, 5_000);
-        assert_eq!(config.solana_rpc_max_in_flight, 16);
-        assert_eq!(config.solana_live_fetch_max_attempts, 5);
+        assert_eq!(config.solana_rpc_max_in_flight, 4);
+        assert_eq!(config.solana_discovery_rpc_requests_per_second, 1);
+        assert_eq!(
+            config.solana_discovery_rpc_rate_limit_cooldown,
+            std::time::Duration::from_secs(5)
+        );
         assert_eq!(
             config.solana_subscription_idle_timeout,
             std::time::Duration::from_secs(30)
         );
-        assert_eq!(config.recovery_page_size, 100);
-        assert_eq!(config.recovery_max_records, 5_000);
+        assert_eq!(
+            config.discovery_max_event_age,
+            std::time::Duration::from_secs(15)
+        );
+        assert_eq!(
+            config.discovery_observation_window,
+            std::time::Duration::from_secs(60)
+        );
+        assert_eq!(config.discovery_max_active_windows, 128);
     }
 
     #[test]
@@ -669,7 +729,7 @@ mod tests {
     }
 
     #[test]
-    fn collector_concurrency_and_retry_limits_are_bounded() {
+    fn collector_concurrency_and_window_limits_are_bounded() {
         let mut values = base_values();
         values.insert("SOLANA_RPC_MAX_IN_FLIGHT".to_owned(), "129".to_owned());
         let error = Config::from_values(|name| values.get(name).cloned())
@@ -683,13 +743,46 @@ mod tests {
         ));
 
         values.insert("SOLANA_RPC_MAX_IN_FLIGHT".to_owned(), "8".to_owned());
-        values.insert("SOLANA_LIVE_FETCH_MAX_ATTEMPTS".to_owned(), "0".to_owned());
+        values.insert(
+            "SOLANA_DISCOVERY_RPC_REQUESTS_PER_SECOND".to_owned(),
+            "0".to_owned(),
+        );
         let error = Config::from_values(|name| values.get(name).cloned())
-            .expect_err("zero fetch attempts must fail closed");
+            .expect_err("zero discovery request rate must fail closed");
         assert!(matches!(
             error,
             ConfigError::Invalid {
-                name: "SOLANA_LIVE_FETCH_MAX_ATTEMPTS",
+                name: "SOLANA_DISCOVERY_RPC_REQUESTS_PER_SECOND",
+                ..
+            }
+        ));
+
+        values.insert(
+            "SOLANA_DISCOVERY_RPC_REQUESTS_PER_SECOND".to_owned(),
+            "1".to_owned(),
+        );
+        values.insert("DISCOVERY_OBSERVATION_WINDOW_MS".to_owned(), "0".to_owned());
+        let error = Config::from_values(|name| values.get(name).cloned())
+            .expect_err("zero observation window must fail closed");
+        assert!(matches!(
+            error,
+            ConfigError::Invalid {
+                name: "DISCOVERY_OBSERVATION_WINDOW_MS",
+                ..
+            }
+        ));
+
+        values.insert(
+            "DISCOVERY_OBSERVATION_WINDOW_MS".to_owned(),
+            "60000".to_owned(),
+        );
+        values.insert("COLLECTOR_QUEUE_CAPACITY".to_owned(), "100001".to_owned());
+        let error = Config::from_values(|name| values.get(name).cloned())
+            .expect_err("unbounded collector queues must fail closed");
+        assert!(matches!(
+            error,
+            ConfigError::Invalid {
+                name: "COLLECTOR_QUEUE_CAPACITY",
                 ..
             }
         ));

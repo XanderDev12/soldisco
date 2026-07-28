@@ -7,28 +7,38 @@
    genesis identity before binding the database or opening intake; the browser
    never owns collector state.
 2. **Pump intake** — WebSocket PubSub observes relevant Pump and PumpSwap
-   notifications. Every success or failure notification requires a matching
-   authoritative HTTP transaction signature, exact slot, and status. Bounded
-   ordered-concurrent HTTP RPC includes CPI instruction data and finite fetch
-   attempts; a watchdog reconnects silent subscriptions and checkpoint
-   recovery covers bounded missed signatures.
+   notifications. The server ignores failed transactions and predecodes direct
+   program-data logs. Fresh Pump creation or PumpSwap pool-creation events
+   provision an immediate activity window and, within the running server
+   process, can receive at most one globally deduplicated, paced HTTP
+   transaction request. A discovery that ages out before request admission is
+   cancelled and skipped without HTTP. An attempted response must match the
+   successful notification's signature and exact slot. A miss, timeout, or
+   rate limit cancels that provisional window and skips the discovery without
+   retrying it or disturbing the live WebSocket. A provider rate-limit response
+   delays only later, distinct signatures.
 3. **Durable handoff** — each normalized observation is committed to local
    PostgreSQL with source, decoder, Solana coordinates, exact market identity,
    event time, receipt time, and compact evidence before downstream work is
    notified. Attributable malformed event or log evidence, plus historical
-   facts whose exact market/quote cannot be resolved, enter quarantine before
-   checkpoint advance; unknown discriminators are ignored. Quarantined
-   unresolved facts are not automatically reprocessed yet. Unrecoverable
-   bounded history becomes an explicit gap and keeps stream health degraded.
+   facts whose exact market/quote cannot be resolved, enter quarantine; unknown
+   discriminators are ignored. Quarantined unresolved facts are not
+   automatically reprocessed yet.
 4. **Structural discovery (implemented)** — the current `OBSERVE_ALL`
    projection admits every structurally valid decoded candidate as `OBSERVED`
-   and maintains venue-scoped cumulative trade, buy/sell, atomic-volume, and
-   unique-trader activity. It applies no qualification threshold and produces
-   no approval, rejection, risk score, or opportunity score.
+   and confirms its configurable, non-extending provisional observation
+   window. Receipt-time tokens preserve immediate and same-transaction
+   activity while the authoritative read is pending. While confirmed, matching
+   Pump mint or PumpSwap pool events are decoded directly from the two existing
+   PubSub feeds and update venue-scoped trade, buy/sell, atomic-volume, and
+   unique-trader activity without HTTP. It applies no qualification threshold
+   and produces no approval, rejection, risk score, or opportunity score.
 5. **Operational safety (implemented)** — transient pipeline faults restart
    with capped backoff, while network-identity mismatch and storage-limit
-   failures enter terminal `ERROR`; terminal history is pruned in bounded
-   batches, and discovery snapshots state when they are truncated.
+   failures enter terminal `ERROR`. Sustained one-shot HTTP failures and
+   provider rate-limit state degrade the stream without retrying dropped
+   signatures; terminal history is pruned in bounded batches, and discovery
+   snapshots state when they are truncated.
 6. **Rolling qualification (planned)** — bounded rolling trades, volume,
    buy/sell balance, unique wallets, price movement, curve state, and migration
    state support an inexpensive initial qualification.
@@ -38,9 +48,10 @@
 8. **Raydium venue enrichment (planned)** — when an eligible Pump candidate has a
    supported Raydium market, exact CPMM, CLMM, or AMM v4 pools are evaluated as
    separate venue evidence. Metrics are not blindly merged across pools.
-9. **Candidate monitoring (planned)** — approved candidates enter expiring windows that
-   continue tracking trades, volume, liquidity, price, holders, and wallet
-   activity.
+9. **Candidate monitoring (planned)** — approved candidates later enter richer
+   persisted windows that continue tracking liquidity, price, holders, wallet
+   activity, and strategy-specific features. These are separate from the
+   implemented short pre-decision activity window.
 10. **Feature production (planned)** — immutable market, wallet-score, and wallet-cluster
    snapshots capture exactly what was knowable at an evaluation time.
 11. **Advisory AI (planned)** — optional asynchronous AI summarizes bounded evidence and

@@ -11,11 +11,12 @@ React web app :3000 -> Rust server :8080 -> PostgreSQL :5432
                                       +-> Solana RPC HTTP and WebSocket
 ```
 
-The Rust backend is one modular process. The current foundation defines typed
-collector, recovery, screening, projection, Raydium, and retention job
-boundaries. Their future supervised tasks will communicate through bounded
-in-process Tokio channels; only the SSE broadcast channel exists now.
-Repository folders do not imply separate services or containers.
+The Rust backend is one modular process. Pump/PumpSwap collection, durable
+projection work, retention, stream supervision, and SSE publication are active.
+High-volume data paths use bounded in-process Tokio channels, while focused
+control and wake signals use the appropriate Tokio synchronization primitives.
+Recovery, screening, and Raydium remain reserved boundaries. Repository folders
+do not imply separate services or containers.
 
 Current decisions:
 

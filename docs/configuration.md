@@ -32,11 +32,13 @@ SOLANA_COMMITMENT
 SOLANA_REQUEST_TIMEOUT_MS
 SOLANA_RECONNECT_DELAY_MS
 SOLANA_RPC_MAX_IN_FLIGHT
-SOLANA_LIVE_FETCH_MAX_ATTEMPTS
+SOLANA_DISCOVERY_RPC_REQUESTS_PER_SECOND
+SOLANA_DISCOVERY_RPC_RATE_LIMIT_COOLDOWN_MS
 SOLANA_SUBSCRIPTION_IDLE_TIMEOUT_MS
+DISCOVERY_MAX_EVENT_AGE_MS
+DISCOVERY_OBSERVATION_WINDOW_MS
+DISCOVERY_MAX_ACTIVE_WINDOWS
 COLLECTOR_QUEUE_CAPACITY
-RECOVERY_PAGE_SIZE
-RECOVERY_MAX_RECORDS
 STREAM_START_TIMEOUT_MS
 ```
 
@@ -59,17 +61,19 @@ The current Rust foundation loads and validates:
 | `RETENTION_INTERVAL_MS` | Maintenance cadence, from 1 second through 1 hour |
 | `RETENTION_BATCH_SIZE` | Rows removed per bounded table batch, from 1 through 10,000 |
 | `SOLANA_NETWORK` | Explicit `mainnet`/`mainnet-beta` or `devnet` identity |
-| `SOLANA_RPC_HTTP_URL` | Transaction reads and checkpoint recovery |
+| `SOLANA_RPC_HTTP_URL` | Genesis verification and one-shot discovery transaction reads |
 | `SOLANA_RPC_WS_URL` | Pump and PumpSwap program-log PubSub |
 | `SOLANA_COMMITMENT` | Explicit `confirmed` or `finalized` read level; `getTransaction` cannot use `processed` |
 | `SOLANA_REQUEST_TIMEOUT_MS` | Positive per-request/connect timeout |
-| `SOLANA_RECONNECT_DELAY_MS` | Positive initial reconnect delay; retries back off |
-| `SOLANA_RPC_MAX_IN_FLIGHT` | Ordered concurrent authoritative transaction fetches, from 1 through 128 |
-| `SOLANA_LIVE_FETCH_MAX_ATTEMPTS` | Finite attempts for a notified transaction, from 1 through 20 |
+| `SOLANA_RECONNECT_DELAY_MS` | Positive initial PubSub reconnect delay; connection retries back off |
+| `SOLANA_RPC_MAX_IN_FLIGHT` | One global bound shared by Pump and PumpSwap one-shot discovery fetches, from 1 through 128; defaults to 4 |
+| `SOLANA_DISCOVERY_RPC_REQUESTS_PER_SECOND` | Global start-rate limit for distinct one-shot discovery reads across Pump and PumpSwap, from 1 through 1,000; defaults to 1 |
+| `SOLANA_DISCOVERY_RPC_RATE_LIMIT_COOLDOWN_MS` | Shared delay applied to later distinct signatures after a provider rate-limit response, from 100 ms through 5 minutes; defaults to 5 seconds |
 | `SOLANA_SUBSCRIPTION_IDLE_TIMEOUT_MS` | Reconnect a silent/half-open PubSub subscription after this interval |
-| `COLLECTOR_QUEUE_CAPACITY` | Positive bound for the in-process transaction queue |
-| `RECOVERY_PAGE_SIZE` | Signatures per recovery page, from 1 through 1,000 |
-| `RECOVERY_MAX_RECORDS` | Per-recovery safety cap, at least the page size and at most 100,000 |
+| `DISCOVERY_MAX_EVENT_AGE_MS` | Maximum age of a direct creation event before it is discarded without HTTP, from 1 second through 5 minutes; defaults to 15 seconds |
+| `DISCOVERY_OBSERVATION_WINDOW_MS` | Non-extending provisional activity window opened at fresh discovery receipt and confirmed after successful normalization, from 1 second through 1 hour; defaults to 60 seconds |
+| `DISCOVERY_MAX_ACTIVE_WINDOWS` | In-memory bound for simultaneous mint/pool observation windows, from 1 through 100,000; defaults to 128 |
+| `COLLECTOR_QUEUE_CAPACITY` | Bound reused for ahead-of-HTTP live notification work, the collector-to-processor queue, and provisional-activity holding, from 1 through 100,000; defaults to 2,048. Pending activity gets a release deadline equal to the discovery-age allowance plus the HTTP timeout, without extending its receipt-time observation window |
 | `STREAM_START_TIMEOUT_MS` | Maximum command wait for an initial stream result |
 
 ## Implemented browser variables
@@ -114,11 +118,35 @@ and WebSocket URLs in the ignored `.env` for continuous use.
 URL does not silently change chain identity. On the first requested pipeline
 start, HTTP RPC `getGenesisHash` must match Soldisco's pinned official
 mainnet/devnet identity before the database is immutably bound or ingestion can
-begin. A later network switch against the same database fails closed. WebSocket
-notifications are corroborated transaction-by-transaction through that
-verified HTTP RPC because Solana PubSub has no equivalent genesis method. The
-configured commitment is used for PubSub, authoritative transaction retrieval,
-and recovery.
+begin. A later network switch against the same database fails closed. Only
+successful, fresh creation logs selected by the prefilter are corroborated
+through that verified HTTP RPC because Solana PubSub has no equivalent genesis
+method. During one running server process, duplicate delivery across the Pump
+and PumpSwap subscriptions shares one selected-signature claim for the full
+freshness horizon. Each selected signature receives at most one HTTP attempt,
+and only if it remains fresh when global pacing and concurrency admission
+allow the request to start. A discovery that ages out while waiting is skipped
+without HTTP. A provider rate-limit response (HTTP/JSON-RPC `429` or JSON-RPC
+`-32005`) delays later, distinct signatures through the shared cooldown but
+never retries the failed signature. The configured commitment is used for
+PubSub and authoritative discovery transaction retrieval.
+
+One provider rate-limit response marks the aggregate stream `DEGRADED`
+immediately. Three
+consecutive other one-shot discovery-read failures do the same. A later
+successful discovery read clears that transport condition when both PubSub
+sources are ready.
+
+The active collection policy is deliberately live-first. A failed HTTP read is
+skipped, a disconnected PubSub source reconnects at the current head, and the
+server does not run `getSignaturesForAddress` backfill. Recovery utilities and
+tables remain reserved for a future explicitly selected completeness mode;
+old checkpoints are not consumed by this collector.
+
+A full Rust-process restart recreates the in-memory signature claims. It does
+not intentionally retry or backfill transactions, but a fresh notification
+delivered again after that restart can be treated as a new live intake
+attempt.
 
 Do not place a real password or RPC credential in this document or a committed
 `.env` file. A committed `.env.example` may contain names and clearly fake
@@ -138,12 +166,12 @@ have used the new version.
 
 ## Storage and channel limits
 
-Transaction queues, concurrent RPC work, fetch attempts, recovery pages,
-recovery records, snapshots, retention batches, timeouts, and reconnect timing
-are bounded through the variables above. Terminal raw history and replaceable
+Transaction queues, paced and concurrent RPC work, discovery age, active
+windows, snapshots, retention batches, timeouts, and reconnect timing are
+bounded through the variables above. Terminal raw history and replaceable
 projection events are pruned without deleting discovery-token/activity
-aggregates, checkpoints, pool identities, or collection-gap records. Pending
-or leased work is never pruned.
+aggregates, reserved checkpoints, pool identities, or collection-gap records.
+Pending or leased work is never pruned.
 
 If `pg_database_size` reaches `DATABASE_MAX_BYTES`, collection fails closed.
 Deleting rows lets PostgreSQL reuse space but does not necessarily reduce its
@@ -155,10 +183,10 @@ measure free filesystem space, PostgreSQL WAL, other databases, Docker disk
 images, or frontend/Rust build caches. Keep `DATABASE_MAX_BYTES` comfortably
 below the machine's remaining capacity and monitor local free space separately.
 Current discovery-token, market, activity, checkpoint, pool,
-rejection-summary, and collection-gap projections are retained so the
-collector can resolve later facts. Their lifecycle and the in-memory
-active-market working set must become bounded before unattended, high-volume,
-long-running use.
+rejection-summary, and collection-gap projections are retained so later facts
+can be resolved. The active observation working set is bounded and expires,
+but durable aggregate lifecycle still needs an archival policy before
+unattended, high-volume, long-running use.
 
 HTTP discovery snapshots return the latest bounded candidates plus
 `tokens_total` and `tokens_truncated`, so the browser never implies that a
