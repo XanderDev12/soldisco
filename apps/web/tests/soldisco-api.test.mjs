@@ -475,6 +475,34 @@ test("uses versioned routes and authenticates only local control commands", asyn
   ]);
 });
 
+test("invokes fetch with the browser global receiver", async () => {
+  const { SoldiscoApiClient } = await loadApiModule("client.ts");
+  let receivedBrowserGlobal = false;
+
+  function browserStyleFetcher(url, init) {
+    if (this !== globalThis) {
+      throw new TypeError("Illegal invocation");
+    }
+    receivedBrowserGlobal = true;
+    assert.equal(url, "/api/local-backend/8080/api/v1/health");
+    assert.equal(init.method, "GET");
+    return Promise.resolve(
+      Response.json({
+        status: "UP",
+        database: "UP",
+        stream: "STOPPED",
+      }),
+    );
+  }
+
+  const client = new SoldiscoApiClient(
+    "/api/local-backend/8080/api/v1",
+    browserStyleFetcher,
+  );
+  assert.equal((await client.health).status, "UP");
+  assert.equal(receivedBrowserGlobal, true);
+});
+
 test("reads and updates prefilter defaults through the guarded contract", async () => {
   const { SoldiscoApiClient } = await loadApiModule("client.ts");
   const requests = [];
@@ -1085,6 +1113,7 @@ test("validates and persists the shared loopback API port", async () => {
   const {
     DEFAULT_LOCAL_API_PORT,
     buildLocalApiBaseUrl,
+    buildLocalApiProxyBaseUrl,
     localApiPortPreferenceStorageKey,
     parseLocalApiPort,
     readLocalApiPortPreference,
@@ -1098,7 +1127,15 @@ test("validates and persists the shared loopback API port", async () => {
     "soldisco.local-api-port.v1",
   );
   assert.equal(buildLocalApiBaseUrl(), "http://127.0.0.1:8080/api/v1");
+  assert.equal(
+    buildLocalApiProxyBaseUrl(),
+    "/api/local-backend/8080/api/v1",
+  );
   assert.equal(buildLocalApiBaseUrl(2), "http://127.0.0.1:2/api/v1");
+  assert.equal(
+    buildLocalApiProxyBaseUrl(2),
+    "/api/local-backend/2/api/v1",
+  );
   assert.equal(
     buildLocalApiBaseUrl(65_535),
     "http://127.0.0.1:65535/api/v1",
@@ -1127,6 +1164,10 @@ test("validates and persists the shared loopback API port", async () => {
   }
   assert.throws(
     () => buildLocalApiBaseUrl(80),
+    /browser-safe integer from 1 to 65535/,
+  );
+  assert.throws(
+    () => buildLocalApiProxyBaseUrl(80),
     /browser-safe integer from 1 to 65535/,
   );
 
@@ -1171,7 +1212,7 @@ test("validates and persists the shared loopback API port", async () => {
     "http://[::1]:3000",
   ]) {
     assert.deepEqual(resolveLocalApiUrl(pageOrigin, 9123), {
-      baseUrl: "http://127.0.0.1:9123/api/v1",
+      baseUrl: "/api/local-backend/9123/api/v1",
       reason: "LOCAL",
     });
   }
@@ -1193,6 +1234,266 @@ test("validates and persists the shared loopback API port", async () => {
     resolveLocalApiUrl("http://localhost:3000", 0).reason,
     "INVALID_PORT",
   );
+});
+
+test("proxies allowlisted API reads without forwarding browser credentials", async () => {
+  const { proxyLocalApiRequest } =
+    await loadApiModule("localProxy.ts");
+  let upstreamRequest;
+  const response = await proxyLocalApiRequest(
+    new Request(
+      "http://localhost:3000/api/local-backend/9123/api/v1/health",
+      {
+        headers: {
+          Accept: "application/json",
+          Authorization: "Bearer must-not-leave",
+          Cookie: "session=must-not-leave",
+          Origin: "http://localhost:3000",
+        },
+      },
+    ),
+    "9123",
+    ["health"],
+    async (url, init) => {
+      upstreamRequest = {
+        url,
+        method: init.method,
+        headers: Object.fromEntries(init.headers.entries()),
+        body: init.body,
+        redirect: init.redirect,
+      };
+      return Response.json(
+        {
+          status: "DEGRADED",
+          database: "DOWN",
+          stream: "STOPPED",
+        },
+        {
+          status: 503,
+          headers: {
+            "Cache-Control": "no-store",
+            "X-Upstream-Private": "must-not-leave",
+          },
+        },
+      );
+    },
+  );
+
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), {
+    status: "DEGRADED",
+    database: "DOWN",
+    stream: "STOPPED",
+  });
+  assert.equal(response.headers.get("x-upstream-private"), null);
+  assert.deepEqual(upstreamRequest, {
+    url: "http://127.0.0.1:9123/api/v1/health",
+    method: "GET",
+    headers: { accept: "application/json" },
+    body: undefined,
+    redirect: "manual",
+  });
+});
+
+test("streams SSE and protects same-origin control requests", async () => {
+  const { proxyLocalApiRequest } =
+    await loadApiModule("localProxy.ts");
+  const eventResponse = await proxyLocalApiRequest(
+    new Request(
+      "http://localhost:3000/api/local-backend/8080/api/v1/events",
+      {
+        headers: {
+          Accept: "text/event-stream",
+          "Last-Event-ID": "41",
+        },
+      },
+    ),
+    "8080",
+    ["events"],
+    async (url, init) => {
+      assert.equal(url, "http://127.0.0.1:8080/api/v1/events");
+      assert.deepEqual(Object.fromEntries(init.headers.entries()), {
+        accept: "text/event-stream",
+        "last-event-id": "41",
+      });
+      return new Response(
+        "event: soldisco\ndata: {\"sequence\":42}\n\n",
+        {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+          },
+        },
+      );
+    },
+  );
+  assert.equal(
+    await eventResponse.text(),
+    "event: soldisco\ndata: {\"sequence\":42}\n\n",
+  );
+  assert.equal(
+    eventResponse.headers.get("content-type"),
+    "text/event-stream",
+  );
+  assert.equal(eventResponse.headers.get("x-accel-buffering"), "no");
+
+  let writeCalls = 0;
+  const writeFetcher = async (url, init) => {
+    writeCalls += 1;
+    assert.equal(url, "http://127.0.0.1:8080/api/v1/stream/start");
+    assert.equal(init.headers.get("origin"), null);
+    assert.equal(init.headers.get("cookie"), null);
+    assert.equal(
+      init.headers.get("x-soldisco-control"),
+      "soldisco-local-ui-v1",
+    );
+    return Response.json({ status: "STARTING", changed: true });
+  };
+  const foreignWrite = await proxyLocalApiRequest(
+    new Request(
+      "http://localhost:3000/api/local-backend/8080/api/v1/stream/start",
+      {
+        method: "POST",
+        headers: {
+          Origin: "https://attacker.example",
+          "X-Soldisco-Control": "soldisco-local-ui-v1",
+        },
+      },
+    ),
+    "8080",
+    ["stream", "start"],
+    writeFetcher,
+  );
+  assert.equal(foreignWrite.status, 403);
+  assert.equal(writeCalls, 0);
+
+  const localWrite = await proxyLocalApiRequest(
+    new Request(
+      "http://localhost:3000/api/local-backend/8080/api/v1/stream/start",
+      {
+        method: "POST",
+        headers: {
+          Origin: "http://localhost:3000",
+          Cookie: "must-not-leave=true",
+          "X-Soldisco-Control": "soldisco-local-ui-v1",
+        },
+      },
+    ),
+    "8080",
+    ["stream", "start"],
+    writeFetcher,
+  );
+  assert.equal(localWrite.status, 200);
+  assert.deepEqual(await localWrite.json(), {
+    status: "STARTING",
+    changed: true,
+  });
+  assert.equal(writeCalls, 1);
+});
+
+test("rejects unsafe gateway targets and reports unreachable Rust", async () => {
+  const { proxyLocalApiRequest } =
+    await loadApiModule("localProxy.ts");
+  const neverFetch = async () => {
+    throw new Error("fetcher should not run");
+  };
+
+  const remote = await proxyLocalApiRequest(
+    new Request(
+      "https://soldisco.example/api/local-backend/8080/api/v1/health",
+    ),
+    "8080",
+    ["health"],
+    neverFetch,
+  );
+  assert.equal(remote.status, 403);
+
+  let crossSiteFetches = 0;
+  const countCrossSiteFetch = async () => {
+    crossSiteFetches += 1;
+    return Response.json({ status: "UP" });
+  };
+  const foreignOrigin = await proxyLocalApiRequest(
+    new Request(
+      "http://localhost:3000/api/local-backend/8080/api/v1/health",
+      {
+        headers: {
+          Origin: "https://attacker.example",
+        },
+      },
+    ),
+    "8080",
+    ["health"],
+    countCrossSiteFetch,
+  );
+  assert.equal(foreignOrigin.status, 403);
+
+  const crossSite = await proxyLocalApiRequest(
+    new Request(
+      "http://localhost:3000/api/local-backend/8080/api/v1/events",
+      {
+        headers: {
+          "Sec-Fetch-Site": "cross-site",
+        },
+      },
+    ),
+    "8080",
+    ["events"],
+    countCrossSiteFetch,
+  );
+  assert.equal(crossSite.status, 403);
+  assert.equal(crossSiteFetches, 0);
+
+  const blockedPort = await proxyLocalApiRequest(
+    new Request(
+      "http://localhost:3000/api/local-backend/80/api/v1/health",
+    ),
+    "80",
+    ["health"],
+    neverFetch,
+  );
+  assert.equal(blockedPort.status, 400);
+
+  const unknownRoute = await proxyLocalApiRequest(
+    new Request(
+      "http://localhost:3000/api/local-backend/8080/api/v1/admin",
+    ),
+    "8080",
+    ["admin"],
+    neverFetch,
+  );
+  assert.equal(unknownRoute.status, 404);
+
+  const wrongMethod = await proxyLocalApiRequest(
+    new Request(
+      "http://localhost:3000/api/local-backend/8080/api/v1/health",
+      { method: "POST" },
+    ),
+    "8080",
+    ["health"],
+    neverFetch,
+  );
+  assert.equal(wrongMethod.status, 405);
+  assert.equal(wrongMethod.headers.get("allow"), "GET");
+
+  const unreachable = await proxyLocalApiRequest(
+    new Request(
+      "http://localhost:3000/api/local-backend/8080/api/v1/health",
+    ),
+    "8080",
+    ["health"],
+    async () => {
+      throw new TypeError("connection refused");
+    },
+  );
+  assert.equal(unreachable.status, 502);
+  assert.deepEqual(await unreachable.json(), {
+    error: {
+      code: "LOCAL_API_UPSTREAM_UNREACHABLE",
+      message:
+        "The local Rust backend could not be reached on port 8080.",
+    },
+  });
 });
 
 test("hydrates and reconnects every browser consumer without stale endpoint leakage", async () => {
@@ -1244,22 +1545,22 @@ test("hydrates and reconnects every browser consumer without stale endpoint leak
   }
 
   function responseFor(url, generation) {
-    const pathname = new URL(url).pathname;
+    const pathname = new URL(url, "http://localhost:3000").pathname;
     let body;
-    if (pathname === "/api/v1/health") {
+    if (pathname.endsWith("/api/v1/health")) {
       body = { status: "UP", database: "UP", stream: "STOPPED" };
-    } else if (pathname === "/api/v1/stream") {
+    } else if (pathname.endsWith("/api/v1/stream")) {
       body = { status: "STOPPED", requested_running: false };
-    } else if (pathname === "/api/v1/discovery") {
+    } else if (pathname.endsWith("/api/v1/discovery")) {
       body = discoveryFixture();
       body.sequence = generation === "old" ? 999 : 1;
       body.tokens[0].symbol = generation === "old" ? "OLD" : "NEW";
     } else if (
-      pathname === "/api/v1/settings/prefilter-defaults"
+      pathname.endsWith("/api/v1/settings/prefilter-defaults")
     ) {
       body = prefilterDefaultsFixture();
     } else if (
-      pathname === "/api/v1/settings/qualification-defaults"
+      pathname.endsWith("/api/v1/settings/qualification-defaults")
     ) {
       body = qualificationDefaultsFixture();
     } else {
@@ -1344,7 +1645,7 @@ test("hydrates and reconnects every browser consumer without stale endpoint leak
       value: (input) => {
         const url = String(input);
         requestUrls.push(url);
-        if (url.includes("127.0.0.1:9123")) {
+        if (url.includes("/api/local-backend/9123/")) {
           return new Promise((resolve) => {
             deferredOldRequests.push({ url, resolve });
           });
@@ -1389,11 +1690,11 @@ test("hydrates and reconnects every browser consumer without stale endpoint leak
       const connected = runtime.backend.connection === "CONNECTED";
       const prefilter = usePrefilterDefaults(
         connected,
-        localApi.baseUrl,
+        runtime.backend.apiBaseUrl,
       );
       const qualification = useQualificationDefaults(
         connected,
-        localApi.baseUrl,
+        runtime.backend.apiBaseUrl,
       );
       latest = { localApi, runtime, prefilter, qualification };
       return null;
@@ -1410,12 +1711,14 @@ test("hydrates and reconnects every browser consumer without stale endpoint leak
     assert.equal(latest.localApi.port, 9123);
     assert.equal(
       latest.runtime.backend.apiBaseUrl,
-      "http://127.0.0.1:9123/api/v1",
+      "/api/local-backend/9123/api/v1",
     );
     assert.equal(latest.runtime.backend.connection, "CONNECTING");
     assert.equal(requestUrls.length, 3);
     assert.ok(
-      requestUrls.every((url) => url.includes("127.0.0.1:9123")),
+      requestUrls.every((url) =>
+        url.includes("/api/local-backend/9123/"),
+      ),
     );
     assert.equal(eventSources.length, 1);
 
@@ -1434,13 +1737,15 @@ test("hydrates and reconnects every browser consumer without stale endpoint leak
     assert.equal(latest.runtime.backend.connection, "CONNECTED");
     assert.equal(
       latest.runtime.backend.apiBaseUrl,
-      "http://127.0.0.1:9333/api/v1",
+      "/api/local-backend/9333/api/v1",
     );
     assert.equal(latest.runtime.discovery.tokens[0].symbol, "NEW");
     assert.ok(
       requestUrls
         .slice(switchedAt)
-        .every((url) => url.includes("127.0.0.1:9333")),
+        .every((url) =>
+          url.includes("/api/local-backend/9333/"),
+        ),
     );
     assert.ok(
       requestUrls.some((url) =>
@@ -1461,7 +1766,7 @@ test("hydrates and reconnects every browser consumer without stale endpoint leak
     });
     assert.equal(
       latest.runtime.backend.apiBaseUrl,
-      "http://127.0.0.1:9333/api/v1",
+      "/api/local-backend/9333/api/v1",
     );
     assert.equal(latest.runtime.discovery.tokens[0].symbol, "NEW");
 
@@ -1476,7 +1781,9 @@ test("hydrates and reconnects every browser consumer without stale endpoint leak
     assert.ok(
       requestUrls
         .slice(retriedAt)
-        .every((url) => url.includes("127.0.0.1:9333")),
+        .every((url) =>
+          url.includes("/api/local-backend/9333/"),
+        ),
     );
   } finally {
     if (root) {

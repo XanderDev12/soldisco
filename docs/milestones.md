@@ -7,9 +7,9 @@
 - Add browser-local, persistent, user-adjustable sidebar and inspector regions.
 - Remember Paper/Live presentation without treating it as authorization; keep
   order drafts and transient navigation session-only.
-- Persist only a validated browser-local API port for the fixed
-  `http://127.0.0.1:<port>/api/v1` endpoint; keep endpoint/origin variables out
-  of the frontend build.
+- Persist only a validated browser-local API port for the same-origin
+  `/api/local-backend/<port>/api/v1` gateway; keep endpoint/origin variables
+  out of the frontend build.
 - Keep one Discovery destination and one Positions destination; avoid separate
   first-pass, watchlist, or duplicate positions surfaces.
 - Keep wallet and execution controls unable to connect, sign, or trade.
@@ -26,7 +26,7 @@
   boundary.
 - Run the PostgreSQL migration and persistence integration test against a
   disposable PostgreSQL 17 service in GitHub CI.
-- Establish the default local topology: React `:3000`, Rust `:8080`,
+- Establish the default loopback topology: React/Vinext `:3000`, Rust `:8080`,
   PostgreSQL `:5432`; a custom browser API port must match the restarted Rust
   `API_PORT`.
 - Define browser contracts for finite HTTP commands/snapshots and one-way SSE
@@ -36,7 +36,11 @@
 ## 3. Connected Pump discovery slice — complete
 
 - Wire the local React UI to Rust health, stream, Discovery, token, and
-  start/stop HTTP routes.
+  start/stop HTTP routes through a same-origin Vinext gateway.
+- Bind both local Vinext development and production-start servers to loopback.
+  Restrict the gateway to local-host requests and the known Soldisco
+  endpoint/method matrix, strip credentials and browser `Origin` before the
+  upstream hop, and preserve unbuffered SSE delivery.
 - Subscribe independently to verified Pump and PumpSwap program activity
   through WebSocket PubSub.
 - Prefilter successful direct logs for fresh Pump creation or PumpSwap

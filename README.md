@@ -11,19 +11,24 @@ enrichment, strategies, AI analysis, and trading remain later milestones.
 ## Selected local topology
 
 ```text
-React UI                    Rust/Axum server                 PostgreSQL
-localhost:3000 --HTTP/SSE-> 127.0.0.1:8080 --SQLx only----> 127.0.0.1:5432
-                                  |
-                                  +--HTTP/WebSocket RPC----> Solana
+Browser                 Vinext local gateway              Rust/Axum server                 PostgreSQL
+localhost:3000 --HTTP/SSE-> /api/local-backend/8080/api/v1 -> 127.0.0.1:8080 --SQLx only-> 127.0.0.1:5432
+                                                                    |
+                                                                    +--HTTP/WebSocket RPC-> Solana
 ```
 
-The diagram shows the defaults. The browser host and API path remain fixed at
-`127.0.0.1` and `/api/v1`; its versioned local port preference defaults to
-`8080` and must match the restarted server's `API_PORT`.
+The diagram shows the defaults. The browser uses the same origin as the local
+web app and never connects to the Rust listener directly. Its versioned local
+port preference selects
+`/api/local-backend/<port>/api/v1`; the Vinext gateway forwards only the
+allowlisted Soldisco HTTP/SSE contract to
+`http://127.0.0.1:<port>/api/v1`. The default is `8080`, and it must match the
+restarted server's `API_PORT`.
 
 There is no cloud backend in the current plan. The separately hosted Sites
-build is a UI preview and remains disconnected from this local runtime. The
-local React app is connected to the Rust API.
+build is a UI preview and remains disconnected from this local runtime; its
+gateway cannot reach a user's loopback services. The local React app is
+connected to Rust through the loopback-only Vinext gateway.
 
 ## Implemented local vertical slice
 
@@ -138,13 +143,18 @@ deliberately deleted. The requested Start/Stop intent is PostgreSQL state too,
 so the Rust server can restore a requested-running stream after restart.
 The local API port, execution-mode presentation, and adjustable
 sidebar/inspector widths are safe browser-local preferences stored in
-`localStorage`. The port only selects
-`http://127.0.0.1:<port>/api/v1`; it must match the backend `API_PORT` and does
-not rebind the server. None of these preferences grants wallet or execution
+`localStorage`. The port only selects the same-origin gateway path
+`/api/local-backend/<port>/api/v1`; the gateway's fixed upstream is
+`http://127.0.0.1:<port>/api/v1`. It must match the backend `API_PORT` and does
+not rebind the server. The gateway is not a general proxy: it is local-host
+only, rejects cross-site browser requests, allowlists the Soldisco endpoints
+and methods, strips browser credentials and `Origin` before the trusted
+loopback hop, and streams SSE without buffering. None of these preferences
+grants wallet or execution
 authority. Unsaved settings drafts, order drafts, current navigation,
-selection, and modal state remain transient. The remaining workspace views are
-UI shells for later milestones. Paper views have no wallet dependency; wallet
-controls belong only to future Live mode.
+selection, and modal state remain transient. The remaining workspace views
+are UI shells for later milestones. Paper views have no wallet dependency;
+wallet controls belong only to future Live mode.
 
 Deterministic scam/rug screening, safety approval, Raydium enrichment, strategy
 configuration, wallet connections, quotes, purchases, sales, and position
@@ -170,10 +180,12 @@ npm run dev:web
 ```
 
 The three processes bind only to `127.0.0.1:5432`,
-`127.0.0.1:8080`, and `localhost:3000` by default. Open
+`127.0.0.1:8080`, and loopback port `3000` by default. Both Vinext development
+and production-start commands explicitly bind the web process to loopback. Open
 `http://localhost:3000`, then use Start Stream to begin collection.
 If `API_PORT` is changed, restart the Rust server and set the browser's local
-API port preference to the same value.
+API port preference to the same value. Browser traffic remains same-origin;
+only the local Vinext process opens the selected loopback connection to Rust.
 
 The committed example uses Solana's public mainnet endpoints so initial setup
 does not require a paid provider. Discovery reads default to one globally

@@ -229,7 +229,7 @@ test("keeps empty trackers and execution boundaries explicit", async () => {
   );
   assert.match(
     sources["controls/LocalApiConnectionCard.tsx"],
-    /Requests sent\. Attempting \$\{backend\.apiBaseUrl\}/,
+    /Requests sent through \$\{activeProxyBaseUrl\} to \$\{activeRustBaseUrl\}/,
   );
   assert.match(
     sources["controls/LocalApiConnectionCard.tsx"],
@@ -425,6 +425,14 @@ test("keeps empty trackers and execution boundaries explicit", async () => {
   );
   assert.match(
     sources["useDiscoveryBackend.ts"],
+    /buildLocalApiProxyBaseUrl/,
+  );
+  assert.doesNotMatch(
+    sources["useDiscoveryBackend.ts"],
+    /\bbuildLocalApiBaseUrl\b/,
+  );
+  assert.match(
+    sources["useDiscoveryBackend.ts"],
     /Promise\.allSettled/,
   );
   assert.doesNotMatch(
@@ -438,6 +446,10 @@ test("keeps empty trackers and execution boundaries explicit", async () => {
   assert.doesNotMatch(
     styles,
     /token-logo--(?:luma|orbit|pebble|blip|tidal|nova|moss|pixel)/i,
+  );
+  assert.match(
+    styles,
+    /\.controls-grid\s*\{[^}]*grid-auto-rows:\s*max-content;/s,
   );
   assert.doesNotMatch(allDashboardSource, /Add to watchlist|Watchlist/);
   assert.doesNotMatch(allDashboardSource, /More actions/);

@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from "react";
 import {
   buildLocalApiBaseUrl,
+  buildLocalApiProxyBaseUrl,
   parseLocalApiPort,
 } from "../../../lib/soldisco-api/config";
 import type { BackendStatusViewModel } from "../../../lib/soldisco-api/viewModels";
@@ -54,7 +55,9 @@ export function LocalApiConnectionCard({
     draft.submitted && parsedPort === null
       ? "Enter a browser-safe whole-number port from 1 to 65535."
       : null;
-  const draftBaseUrl =
+  const activeRustBaseUrl = buildLocalApiBaseUrl(activePort);
+  const activeProxyBaseUrl = buildLocalApiProxyBaseUrl(activePort);
+  const draftRustBaseUrl =
     parsedPort === null
       ? null
       : buildLocalApiBaseUrl(parsedPort);
@@ -74,21 +77,21 @@ export function LocalApiConnectionCard({
 
   const statusMessage =
     backend.connection === "CONNECTING"
-      ? `Requests sent. Attempting ${backend.apiBaseUrl}.`
+      ? `Requests sent through ${activeProxyBaseUrl} to ${activeRustBaseUrl}.`
       : backend.connection === "CONNECTED"
-        ? `Confirmed connected to ${backend.apiBaseUrl}.`
+        ? `Confirmed connected to ${activeRustBaseUrl}.`
         : backend.connection === "UNAVAILABLE"
-          ? `The attempt to ${backend.apiBaseUrl} failed.`
+          ? `The local gateway could not reach ${activeRustBaseUrl}.`
           : backend.connection === "LOCAL_ONLY"
-            ? `No request was sent to ${backend.apiBaseUrl}; open this interface from a local web origin.`
-            : `Ready to attempt ${backend.apiBaseUrl}.`;
+            ? "No request was sent; open this interface from a local web origin."
+            : `Ready to connect through ${activeProxyBaseUrl}.`;
 
   return (
     <article className="control-card control-card--wide local-api-connection">
       <div className="section-card__head">
         <div>
           <h2>Local API Connection</h2>
-          <p>Persistent browser target for every HTTP and live-stream request</p>
+          <p>Same-origin gateway to the loopback-only Rust API</p>
         </div>
         <span className="status-chip">
           {connectionLabels[backend.connection]}
@@ -101,10 +104,10 @@ export function LocalApiConnectionCard({
         noValidate
       >
         <div className="local-api-connection__field">
-          <label htmlFor="local-api-port">API port</label>
+          <label htmlFor="local-api-port">Rust API port</label>
           <p>
-            The host and API path stay fixed to the Rust server&apos;s
-            loopback-only boundary.
+            The browser stays on this site&apos;s origin while the local
+            gateway forwards approved routes to the Rust server.
           </p>
           <div className="local-api-connection__input">
             <span>http://127.0.0.1:</span>
@@ -149,8 +152,12 @@ export function LocalApiConnectionCard({
         </div>
 
         <div className="local-api-connection__attempt">
-          <span className="eyebrow">ACTIVE TARGET</span>
+          <span className="eyebrow">LOCAL GATEWAY</span>
           <code>{backend.apiBaseUrl}</code>
+          <span className="eyebrow local-api-connection__target-label">
+            RUST TARGET
+          </span>
+          <code>{activeRustBaseUrl}</code>
           <p
             className={
               backend.connection === "UNAVAILABLE" ||
@@ -165,9 +172,9 @@ export function LocalApiConnectionCard({
           >
             {statusMessage}
           </p>
-          {draftBaseUrl !== null &&
-            draftBaseUrl !== backend.apiBaseUrl && (
-              <p>Target after save: {draftBaseUrl}</p>
+          {draftRustBaseUrl !== null &&
+            draftRustBaseUrl !== activeRustBaseUrl && (
+              <p>Rust target after save: {draftRustBaseUrl}</p>
             )}
           {draft.storageError && (
             <p
@@ -181,8 +188,9 @@ export function LocalApiConnectionCard({
 
         <div className="local-api-connection__actions">
           <p>
-            Changing this value does not rebind the Rust server. Restart the
-            backend after changing its API_PORT, then save and connect here.
+            Changing this value only selects where the local gateway forwards.
+            Restart Rust after changing its API_PORT, then save and connect
+            here.
           </p>
           <div className="control-card__actions">
             <button

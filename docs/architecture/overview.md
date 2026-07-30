@@ -6,17 +6,19 @@ strategy evaluation, projection, and future execution.
 
 ## Selected local runtime
 
-The existing React/TypeScript interface runs on `localhost:3000`. By default,
-it sends finite commands and snapshot requests to one Rust/Axum process on
-`127.0.0.1:8080` and receives named `soldisco` projection-change notifications
-through SSE. A versioned browser-local port may replace `8080` only when it
-matches the restarted server's `API_PORT`; browser host `127.0.0.1` and path
-`/api/v1` remain fixed. The Rust process alone connects to local PostgreSQL on
-`127.0.0.1:5432` through SQLx and to configurable Solana HTTP and WebSocket RPC
-endpoints.
+The existing React/TypeScript interface and Vinext gateway run on loopback port
+`3000`. By default, the browser sends finite commands and snapshot requests to
+same-origin `/api/local-backend/8080/api/v1` and receives named `soldisco`
+projection-change notifications through the same path over SSE. The gateway
+forwards only the allowlisted contract to one Rust/Axum process on
+`127.0.0.1:8080`. A versioned browser-local port may replace `8080` only when
+it matches the restarted server's `API_PORT`. The Rust process alone connects
+to local PostgreSQL on `127.0.0.1:5432` through SQLx and to configurable Solana
+HTTP and WebSocket RPC endpoints.
 
 The separately hosted Sites build remains a disconnected UI preview. No
-always-on or cloud backend is part of the current architecture.
+always-on or cloud backend is part of the current architecture, and the
+hosted worker's loopback cannot reach a user's local Rust process.
 
 ## Flow and implementation boundary
 
@@ -141,15 +143,20 @@ keep the orchestration layer within a small line-count budget.
 The local API port, Paper/Live execution-mode presentation, and adjustable
 sidebar/inspector widths are validated browser-local preferences. They persist
 in `localStorage` without granting wallet, signing, or execution authority. The
-port only selects `http://127.0.0.1:<port>/api/v1`; it does not rebind the
-backend or change its exact request-authority and `WEB_ORIGIN` CORS checks.
-Unsaved settings text, order drafts, active navigation, token selection, tabs,
-and modals remain transient.
+port only selects same-origin `/api/local-backend/<port>/api/v1`; the gateway
+maps it to `http://127.0.0.1:<port>/api/v1`. It does not rebind the backend or
+change its exact request-authority and direct-access `WEB_ORIGIN` CORS checks.
+The loopback-bound gateway accepts only local-host requests and allowlisted
+Soldisco endpoints and methods, removes browser credentials and `Origin`
+before the upstream hop, and streams SSE without buffering. Unsaved settings
+text, order drafts, active navigation, token selection, tabs, and modals remain
+transient.
 
 ## Boundaries
 
 - The web app renders state and collects explicit user intent.
-- Axum routes own browser transport, not discovery or scoring rules.
+- The Vinext gateway owns the narrow same-origin browser hop; Axum routes own
+  the backend API contract, not discovery or scoring rules.
 - `api-contracts` owns browser-facing message shapes.
 - `source-pump` decodes Pump and PumpSwap facts; it does not score or trade.
 - `source-raydium` is the planned venue-fact boundary; it will not approve a

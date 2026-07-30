@@ -23,11 +23,15 @@ TypeScript, and Tailwind's CSS toolchain.
 - Includes an inspector with overview, risk, signal, trade, and position views.
 - Provides adjustable navigation and inspector regions with device-local layout
   persistence in browser `localStorage`.
-- Uses the fixed browser endpoint shape
-  `http://127.0.0.1:<port>/api/v1` and persists only its validated,
+- Uses the same-origin browser endpoint shape
+  `/api/local-backend/<port>/api/v1` and persists only its validated,
   browser-safe port in `localStorage`. The default is `8080`; the selected
   value is shared by every HTTP/SSE consumer and must match the restarted
   backend's `API_PORT`.
+- Proxies that allowlisted contract through the local Vinext server to
+  `http://127.0.0.1:<port>/api/v1`. The gateway accepts only local-host
+  requests, known Soldisco paths and methods, strips browser credentials and
+  `Origin` before the loopback hop, and passes SSE through as a live stream.
 - Provides Prefilter and Qualification Defaults controls whose saved values and
   revisions are owned by PostgreSQL. Unsaved form text is transient.
 - Keeps Paper and Live trading views distinct: Paper records simulated entry
@@ -54,10 +58,16 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
-The web build needs no public endpoint or origin environment variables. If the
-Rust server is restarted on a non-default `API_PORT`, update the browser-local
-API port preference; the UI never accepts a different host, path, or
-credential-bearing URL.
+The development and production-start commands bind port `3000` to loopback,
+not all network interfaces. The web build needs no public endpoint or origin
+environment variables. If the Rust server is restarted on a non-default
+`API_PORT`, update the browser-local API port preference. The browser still
+uses the local page's origin; it never accepts an upstream host,
+credential-bearing URL, or arbitrary proxy path.
+
+The separately hosted Sites build remains a disconnected UI preview. A hosted
+worker's loopback is not the user's computer, so it cannot use this local
+gateway to reach the Rust process.
 
 ## Verify
 

@@ -12,7 +12,7 @@ export function BackendStatusNotice({
       <div className="backend-notice backend-notice--error" role="alert">
         <strong>{backend.errorCode}</strong>
         <span>
-          Attempt to {backend.apiBaseUrl}: {backend.errorMessage}
+          Attempt through {backend.apiBaseUrl}: {backend.errorMessage}
         </span>
       </div>
     );
@@ -21,7 +21,7 @@ export function BackendStatusNotice({
   if (backend.connection === "CONNECTING") {
     return (
       <div className="backend-notice" role="status">
-        Request sent — attempting {backend.apiBaseUrl}…
+        Request sent through local gateway {backend.apiBaseUrl}…
       </div>
     );
   }
@@ -29,7 +29,7 @@ export function BackendStatusNotice({
   if (backend.connection === "LOCAL_ONLY") {
     return (
       <div className="backend-notice" role="status">
-        No request sent to {backend.apiBaseUrl}. Backend controls are
+        No request sent through {backend.apiBaseUrl}. Backend controls are
         available only from the local workspace.
       </div>
     );
@@ -38,7 +38,7 @@ export function BackendStatusNotice({
   if (backend.connection === "UNAVAILABLE") {
     return (
       <div className="backend-notice backend-notice--error" role="alert">
-        The attempt to {backend.apiBaseUrl} failed.
+        The local gateway attempt through {backend.apiBaseUrl} failed.
       </div>
     );
   }

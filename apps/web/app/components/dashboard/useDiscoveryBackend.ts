@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SoldiscoApiClient } from "../../lib/soldisco-api/client";
 import {
-  buildLocalApiBaseUrl,
+  buildLocalApiProxyBaseUrl,
   DEFAULT_LOCAL_API_PORT,
   resolveLocalApiUrl,
 } from "../../lib/soldisco-api/config";
@@ -84,7 +84,7 @@ export function useDiscoveryBackend({
   apiPort,
   attemptRevision,
 }: DiscoveryBackendOptions) {
-  const apiBaseUrl = buildLocalApiBaseUrl(
+  const apiBaseUrl = buildLocalApiProxyBaseUrl(
     apiPort ?? DEFAULT_LOCAL_API_PORT,
   );
   const clientRef = useRef<SoldiscoApiClient | null>(null);

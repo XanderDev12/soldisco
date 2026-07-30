@@ -33,7 +33,7 @@ export class SoldiscoApiClient {
 
   constructor(baseUrl: string, fetcher: Fetcher = fetch, timeoutMs = 8_000) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
-    this.#fetcher = fetcher;
+    this.#fetcher = fetcher.bind(globalThis);
     this.#timeoutMs = timeoutMs;
   }
 
