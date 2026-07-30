@@ -140,6 +140,10 @@ collection.
 
 Prefilter Defaults, Qualification Defaults, and requested-running stream intent
 are backend settings and therefore live in PostgreSQL. The browser's
-execution-mode presentation and adjustable dashboard widths live separately
-in `localStorage`; order drafts and transient navigation are deliberately not
-backend settings or execution authorization.
+validated local API port, execution-mode presentation, and adjustable dashboard
+widths live separately in `localStorage`. The browser port selects only
+`http://127.0.0.1:<port>/api/v1`, must match `API_PORT`, and cannot rebind the
+server; changing the bind port requires a server restart. `API_HOST`,
+`API_PORT`, and `WEB_ORIGIN` remain server configuration, including exact
+request-authority and CORS checks. Order drafts and transient navigation are
+deliberately not backend settings or execution authorization.

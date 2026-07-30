@@ -21,6 +21,7 @@ import {
 } from "./useDashboardLayout";
 import { useCompactNavigation } from "./useCompactNavigation";
 import { useExecutionModePreference } from "./useExecutionModePreference";
+import { useLocalApiPortPreference } from "./useLocalApiPortPreference";
 import { WalletUnavailableToast } from "./WalletUnavailableToast";
 import { DashboardSectionView } from "./views/DashboardSectionView";
 
@@ -62,12 +63,16 @@ export function DiscoveryDashboard() {
     useState(initialTradeDrafts);
   const mobileMenuButtonRef = useRef<HTMLButtonElement>(null);
   const compactNavigation = useCompactNavigation();
+  const localApi = useLocalApiPortPreference();
   const {
     backend,
     discovery,
     discoveryStale,
     toggleStream,
-  } = useDiscoveryBackend();
+  } = useDiscoveryBackend({
+    apiPort: localApi.ready ? localApi.port : null,
+    attemptRevision: localApi.attemptRevision,
+  });
   const {
     activeResize,
     beginResize,
@@ -207,8 +212,10 @@ export function DiscoveryDashboard() {
           <DashboardSectionView
             view={activeView}
             backend={backend}
+            apiPort={localApi.port}
             mode={mode}
             onToggleStream={() => void toggleStream()}
+            onConnectApi={localApi.connect}
             onModeChange={changeMode}
             onWallet={showWalletUnavailable}
             onUpload={() => setUploadOpen(true)}

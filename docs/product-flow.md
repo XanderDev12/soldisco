@@ -71,10 +71,13 @@
    revisioned in PostgreSQL, editable while running, and apply only to new
    durable windows; existing windows keep their pinned values. Both setting
    groups and requested-running stream intent survive browser, server, and
-   computer restarts unless the database is deliberately reset. Paper/Live
-   presentation and adjustable sidebar/inspector widths persist separately in
-   browser `localStorage` without authorization power; order drafts, unsaved
-   form text, and transient navigation do not persist.
+   computer restarts unless the database is deliberately reset. The validated
+   local API port, Paper/Live presentation, and adjustable sidebar/inspector
+   widths persist separately in browser `localStorage`. The port only selects
+   `http://127.0.0.1:<port>/api/v1`, must match the restarted backend's
+   `API_PORT`, and does not weaken Host or CORS checks. These preferences have
+   no authorization power; order drafts, unsaved form text, and transient
+   navigation do not persist.
 9. **Discovery projection (implemented)** — the default `QUALIFIED_ONLY` feed
    shows only current `QUALIFIED` candidates. Counters separately report current
    observed/qualified tokens, queued structural facts, active qualification
@@ -143,8 +146,9 @@ The UI receives read-only projections. It does not define domain truth, perform
 scoring, or infer fills. Paper mode never presents wallet connection as a
 dependency; wallet controls belong only to Live mode.
 
-The selected topology is local: `localhost:3000` sends HTTP commands and
-receives authoritative snapshots plus named SSE notifications from
-`127.0.0.1:8080`. The Rust server alone talks to PostgreSQL and Solana. The
-hosted Sites preview remains disconnected because it has no remotely deployed
-Rust backend.
+The selected topology is local. By default, `localhost:3000` sends HTTP
+commands and receives authoritative snapshots plus named SSE notifications
+from `127.0.0.1:8080`. A different browser-local port works only when it
+matches the backend `API_PORT`; the browser host and `/api/v1` path remain
+fixed. The Rust server alone talks to PostgreSQL and Solana. The hosted Sites
+preview remains disconnected because it has no remotely deployed Rust backend.

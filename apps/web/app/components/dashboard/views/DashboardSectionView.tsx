@@ -12,8 +12,10 @@ import { StrategiesView } from "./StrategiesView";
 export type DashboardSectionViewProps = {
   view: SectionView;
   backend: BackendStatusViewModel;
+  apiPort: number;
   mode: ExecutionMode;
   onToggleStream: () => void;
+  onConnectApi: (port: number) => boolean;
   onModeChange: (mode: ExecutionMode) => void;
   onWallet: () => void;
   onUpload: () => void;
@@ -22,8 +24,10 @@ export type DashboardSectionViewProps = {
 function SectionContent({
   view,
   backend,
+  apiPort,
   mode,
   onToggleStream,
+  onConnectApi,
   onModeChange,
   onWallet,
   onUpload,
@@ -43,8 +47,10 @@ function SectionContent({
       return (
         <ControlsView
           backend={backend}
+          apiPort={apiPort}
           mode={mode}
           onToggleStream={onToggleStream}
+          onConnectApi={onConnectApi}
           onModeChange={onModeChange}
         />
       );

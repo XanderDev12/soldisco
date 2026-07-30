@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SoldiscoApiClient } from "../../../lib/soldisco-api/client";
-import { resolveBrowserApiUrl } from "../../../lib/soldisco-api/config";
 import type {
   PrefilterDefaultsResponse,
   UpdatePrefilterDefaultsRequest,
@@ -16,7 +15,10 @@ type SettingsRequestStatus =
   | "SAVING"
   | "ERROR";
 
-export function usePrefilterDefaults(enabled: boolean) {
+export function usePrefilterDefaults(
+  enabled: boolean,
+  apiBaseUrl: string,
+) {
   const mountedRef = useRef(false);
   const clientRef = useRef<SoldiscoApiClient | null>(null);
   const [settings, setSettings] =
@@ -43,34 +45,35 @@ export function usePrefilterDefaults(enabled: boolean) {
 
   useEffect(() => {
     mountedRef.current = true;
+    let active = true;
     if (!enabled) {
       clientRef.current = null;
-      return () => {
-        mountedRef.current = false;
-      };
-    }
-
-    const resolution = resolveBrowserApiUrl();
-    if (resolution.baseUrl === null) {
       queueMicrotask(() => {
-        if (!mountedRef.current) return;
-        setErrorMessage("The local settings API is unavailable.");
-        setStatus("ERROR");
+        if (!active || !mountedRef.current) return;
+        setSettings(null);
+        setStatus("IDLE");
+        setErrorMessage(null);
       });
       return () => {
+        active = false;
         mountedRef.current = false;
       };
     }
 
-    const client = new SoldiscoApiClient(resolution.baseUrl);
+    const client = new SoldiscoApiClient(apiBaseUrl);
     clientRef.current = client;
+    queueMicrotask(() => {
+      if (!active || !mountedRef.current) return;
+      setSettings(null);
+    });
     void refresh();
 
     return () => {
+      active = false;
       mountedRef.current = false;
       if (clientRef.current === client) clientRef.current = null;
     };
-  }, [enabled, refresh]);
+  }, [apiBaseUrl, enabled, refresh]);
 
   const save = useCallback(
     async (

@@ -11,7 +11,9 @@ export function BackendStatusNotice({
     return (
       <div className="backend-notice backend-notice--error" role="alert">
         <strong>{backend.errorCode}</strong>
-        <span>{backend.errorMessage}</span>
+        <span>
+          Attempt to {backend.apiBaseUrl}: {backend.errorMessage}
+        </span>
       </div>
     );
   }
@@ -19,7 +21,7 @@ export function BackendStatusNotice({
   if (backend.connection === "CONNECTING") {
     return (
       <div className="backend-notice" role="status">
-        Connecting to the local Rust backend…
+        Request sent — attempting {backend.apiBaseUrl}…
       </div>
     );
   }
@@ -27,7 +29,8 @@ export function BackendStatusNotice({
   if (backend.connection === "LOCAL_ONLY") {
     return (
       <div className="backend-notice" role="status">
-        Backend controls are available only from the local workspace.
+        No request sent to {backend.apiBaseUrl}. Backend controls are
+        available only from the local workspace.
       </div>
     );
   }
@@ -35,7 +38,7 @@ export function BackendStatusNotice({
   if (backend.connection === "UNAVAILABLE") {
     return (
       <div className="backend-notice backend-notice--error" role="alert">
-        The local Rust backend is unavailable.
+        The attempt to {backend.apiBaseUrl} failed.
       </div>
     );
   }

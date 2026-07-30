@@ -187,6 +187,7 @@ export function mapStreamControl(
 }
 
 export function mapBackendStatus(input: {
+  apiBaseUrl: string;
   connection: BackendConnectionStatus;
   health: HealthResponse | null;
   healthFresh: boolean;
@@ -210,6 +211,7 @@ export function mapBackendStatus(input: {
     backendReachable && input.streamFresh ? input.stream : null;
 
   return {
+    apiBaseUrl: input.apiBaseUrl,
     connection: input.connection,
     connectionLabel: connectionLabels[input.connection],
     overall: currentHealth?.status ?? null,

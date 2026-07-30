@@ -2,7 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SoldiscoApiClient } from "../../lib/soldisco-api/client";
-import { resolveBrowserApiUrl } from "../../lib/soldisco-api/config";
+import {
+  buildLocalApiBaseUrl,
+  DEFAULT_LOCAL_API_PORT,
+  resolveLocalApiUrl,
+} from "../../lib/soldisco-api/config";
 import type {
   DiscoverySnapshot,
   HealthResponse,
@@ -66,7 +70,23 @@ const errorPriority: ErrorSurface[] = [
   "events",
 ];
 
-export function useDiscoveryBackend() {
+type DiscoveryBackendOptions = {
+  apiPort: number | null;
+  attemptRevision: number;
+};
+
+type ActiveConnectionAttempt = {
+  baseUrl: string;
+  revision: number;
+};
+
+export function useDiscoveryBackend({
+  apiPort,
+  attemptRevision,
+}: DiscoveryBackendOptions) {
+  const apiBaseUrl = buildLocalApiBaseUrl(
+    apiPort ?? DEFAULT_LOCAL_API_PORT,
+  );
   const clientRef = useRef<SoldiscoApiClient | null>(null);
   const discoveryRefreshRef =
     useRef<DiscoveryRefreshCoordinator | null>(null);
@@ -78,6 +98,8 @@ export function useDiscoveryBackend() {
   const mountedRef = useRef(false);
   const [connection, setConnection] =
     useState<BackendConnectionStatus>("IDLE");
+  const [activeAttempt, setActiveAttempt] =
+    useState<ActiveConnectionAttempt | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [stream, setStream] = useState<StreamStateResponse | null>(null);
   const [snapshot, setSnapshot] =
@@ -111,9 +133,20 @@ export function useDiscoveryBackend() {
 
     try {
       await coordinator.refresh();
-      if (!mountedRef.current) return;
+      if (
+        !mountedRef.current ||
+        discoveryRefreshRef.current !== coordinator
+      ) {
+        return;
+      }
       setSurfaceError("discovery", null);
     } catch (reason) {
+      if (
+        !mountedRef.current ||
+        discoveryRefreshRef.current !== coordinator
+      ) {
+        return;
+      }
       acceptError("discovery", reason);
     }
   }, [acceptError, setSurfaceError]);
@@ -247,51 +280,66 @@ export function useDiscoveryBackend() {
 
   useEffect(() => {
     mountedRef.current = true;
+    let active = true;
     const responseFreshness = responseFreshnessRef.current;
-    const resolution = resolveBrowserApiUrl();
+    if (apiPort === null) {
+      return () => {
+        active = false;
+        mountedRef.current = false;
+      };
+    }
+
+    const resolution = resolveLocalApiUrl(
+      window.location.origin,
+      apiPort,
+    );
 
     if (resolution.baseUrl === null) {
       queueMicrotask(() => {
-        if (!mountedRef.current) return;
+        if (!active || !mountedRef.current) return;
         setConnection(
           resolution.reason === "NON_LOCAL_PAGE"
             ? "LOCAL_ONLY"
             : "UNAVAILABLE",
         );
-        if (
-          resolution.reason === "INVALID_URL" ||
-          resolution.reason === "NON_LOCAL_API"
-        ) {
+        setActiveAttempt({
+          baseUrl: apiBaseUrl,
+          revision: attemptRevision,
+        });
+        setHealth(null);
+        setStream(null);
+        setSnapshot(null);
+        setLiveUpdates("IDLE");
+        setCommand(null);
+        setErrors(initialErrors);
+        if (resolution.reason === "INVALID_PORT") {
           setSurfaceError(
             "configuration",
             new SoldiscoApiError(
-              "INVALID_LOCAL_API_URL",
-              "The configured API URL must be a valid localhost URL.",
-            ),
-          );
-        } else if (
-          resolution.reason === "INVALID_WEB_ORIGIN" ||
-          resolution.reason === "LOCAL_ORIGIN_MISMATCH"
-        ) {
-          setSurfaceError(
-            "configuration",
-            new SoldiscoApiError(
-              "MISALIGNED_LOCAL_WEB_ORIGIN",
-              "Open the UI from its configured local web origin and keep it aligned with the backend WEB_ORIGIN.",
+              "INVALID_LOCAL_API_PORT",
+              "The local API port must be a browser-safe integer from 1 to 65535.",
             ),
           );
         }
       });
       return () => {
+        active = false;
         mountedRef.current = false;
       };
     }
 
-    const client = new SoldiscoApiClient(resolution.baseUrl);
+    const resolvedBaseUrl = resolution.baseUrl;
+    const client = new SoldiscoApiClient(resolvedBaseUrl);
     const discoveryCoordinator = createDiscoveryRefreshCoordinator(
       () => client.discovery,
       (nextSnapshot) => {
-        if (!mountedRef.current || clientRef.current !== client) return;
+        if (
+          !active ||
+          !mountedRef.current ||
+          clientRef.current !== client
+        ) {
+          return;
+        }
         setSnapshot((current) =>
           current === null || nextSnapshot.sequence >= current.sequence
             ? nextSnapshot
@@ -302,14 +350,26 @@ export function useDiscoveryBackend() {
     clientRef.current = client;
     discoveryRefreshRef.current = discoveryCoordinator;
     queueMicrotask(() => {
-      if (mountedRef.current) setConnection("CONNECTING");
+      if (!active || !mountedRef.current) return;
+      setActiveAttempt({
+        baseUrl: resolvedBaseUrl,
+        revision: attemptRevision,
+      });
+      setConnection("CONNECTING");
+      setHealth(null);
+      setStream(null);
+      setSnapshot(null);
+      setCommand(null);
+      setErrors(initialErrors);
     });
     void refreshAll();
 
-    const unsubscribe = subscribeToSoldiscoEvents(resolution.baseUrl, {
-      onEnvelope: handleLiveEnvelope,
+    const unsubscribe = subscribeToSoldiscoEvents(resolvedBaseUrl, {
+      onEnvelope: (envelope) => {
+        if (active) handleLiveEnvelope(envelope);
+      },
       onStatus: (status) => {
-        if (!mountedRef.current) return;
+        if (!active || !mountedRef.current) return;
         setLiveUpdates(status);
         if (status === "OPEN") {
           setSurfaceError("events", null);
@@ -318,10 +378,13 @@ export function useDiscoveryBackend() {
           void refreshAll();
         }
       },
-      onError: (reason) => acceptError("events", reason),
+      onError: (reason) => {
+        if (active) acceptError("events", reason);
+      },
     });
 
     return () => {
+      active = false;
       mountedRef.current = false;
       unsubscribe();
       discoveryCoordinator.dispose();
@@ -335,6 +398,9 @@ export function useDiscoveryBackend() {
     };
   }, [
     acceptError,
+    apiBaseUrl,
+    apiPort,
+    attemptRevision,
     handleLiveEnvelope,
     refreshAll,
     setSurfaceError,
@@ -364,8 +430,8 @@ export function useDiscoveryBackend() {
     } catch (reason) {
       commandError = normalizeApiError(reason);
     } finally {
-      await refreshStream();
-      if (mountedRef.current) {
+      if (clientRef.current === client) await refreshStream();
+      if (mountedRef.current && clientRef.current === client) {
         setSurfaceError("command", commandError);
         setCommand(null);
       }
@@ -376,22 +442,29 @@ export function useDiscoveryBackend() {
     errorPriority
       .map((surface) => errors[surface])
       .find((candidate) => candidate !== null) ?? null;
+  const currentAttempt =
+    activeAttempt?.baseUrl === apiBaseUrl &&
+    activeAttempt.revision === attemptRevision;
+  const currentConnection = currentAttempt ? connection : "IDLE";
 
   const backend = useMemo(
     () =>
       mapBackendStatus({
-        connection,
+        apiBaseUrl,
+        connection: currentConnection,
         health,
         stream,
-        liveUpdates,
-        command,
-        error,
-        healthFresh: errors.health === null,
-        streamFresh: errors.stream === null,
+        liveUpdates: currentAttempt ? liveUpdates : "IDLE",
+        command: currentAttempt ? command : null,
+        error: currentAttempt ? error : null,
+        healthFresh: currentAttempt && errors.health === null,
+        streamFresh: currentAttempt && errors.stream === null,
       }),
     [
       command,
-      connection,
+      apiBaseUrl,
+      currentAttempt,
+      currentConnection,
       error,
       errors.health,
       errors.stream,
@@ -402,16 +475,21 @@ export function useDiscoveryBackend() {
   );
 
   const discovery = useMemo(
-    () => (snapshot === null ? null : mapDiscoverySnapshot(snapshot)),
-    [snapshot],
+    () =>
+      !currentAttempt || snapshot === null
+        ? null
+        : mapDiscoverySnapshot(snapshot),
+    [currentAttempt, snapshot],
   );
 
   return {
     backend,
     discovery,
     discoveryStale:
+      currentAttempt &&
       snapshot !== null &&
-      (connection !== "CONNECTED" || errors.discovery !== null),
+      (currentConnection !== "CONNECTED" ||
+        errors.discovery !== null),
     refresh: refreshAll,
     toggleStream,
   };

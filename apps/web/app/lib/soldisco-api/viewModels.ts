@@ -30,6 +30,7 @@ export type StreamControlViewModel = {
 };
 
 export type BackendStatusViewModel = {
+  apiBaseUrl: string;
   connection: BackendConnectionStatus;
   connectionLabel: string;
   overall: string | null;
