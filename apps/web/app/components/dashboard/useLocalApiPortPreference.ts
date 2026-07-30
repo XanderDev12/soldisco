@@ -6,7 +6,6 @@ import {
   useSyncExternalStore,
 } from "react";
 import {
-  buildLocalApiBaseUrl,
   DEFAULT_LOCAL_API_PORT,
   localApiPortPreferenceStorageKey,
   parseLocalApiPort,
@@ -123,7 +122,6 @@ export function useLocalApiPortPreference() {
   return {
     ready,
     port,
-    baseUrl: buildLocalApiBaseUrl(port),
     attemptRevision,
     connect,
   };

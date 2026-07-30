@@ -7,9 +7,9 @@
   },
   "packageManager": "npm@11.16.0",
   "scripts": {
-    "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log node ./node_modules/vinext/dist/cli.js dev",
+    "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log node ./node_modules/vinext/dist/cli.js dev --hostname 127.0.0.1",
     "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log node ./node_modules/vinext/dist/cli.js build",
-    "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log node ./node_modules/vinext/dist/cli.js start",
+    "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log node ./node_modules/vinext/dist/cli.js start --hostname 127.0.0.1",
     "test": "npm run build && node --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "typecheck:packages": "tsc -p ../../packages/tsconfig.json",

@@ -141,15 +141,25 @@ deployment topology.
 - The UI consumes projections and collects intent; it does not own domain truth.
 - The validated local API port, execution-mode presentation, and adjustable
   sidebar/inspector widths may persist in browser `localStorage`, but they
-  grant no backend or execution authority. The port changes only
-  `http://127.0.0.1:<port>/api/v1`, must match server `API_PORT`, and cannot
+  grant no backend or execution authority. The port changes only same-origin
+  `/api/local-backend/<port>/api/v1`, must match server `API_PORT`, and cannot
   rebind the backend.
-- Backend `API_HOST:API_PORT` request-authority checks and exact `WEB_ORIGIN`
-  CORS checks remain authoritative regardless of browser preferences.
+- Both Vinext local run modes bind to loopback. The gateway accepts only local
+  hosts and same-origin browser traffic, rejects cross-site Fetch Metadata,
+  allowlists Soldisco endpoints and methods, strips browser credentials and
+  `Origin` from the upstream request, and never becomes an arbitrary loopback
+  or local-network proxy.
+- The gateway preserves streaming semantics for SSE and does not buffer the
+  event stream as a finite response.
+- Backend `API_HOST:API_PORT` request-authority checks and exact direct-access
+  `WEB_ORIGIN` CORS checks remain authoritative regardless of browser
+  preferences. The gateway validates its same-origin browser boundary before
+  creating the origin-free trusted loopback request.
   Unsaved settings text, order drafts, current navigation, and selections
   remain transient.
-- The local browser communicates with the Rust server through HTTP commands,
-  snapshots, and SSE. It never connects directly to PostgreSQL.
+- The local browser communicates through the same-origin Vinext gateway using
+  HTTP commands, snapshots, and SSE. It never connects directly to Rust,
+  Solana, or PostgreSQL.
 - Source decoders expose observations; they do not contain strategy rules.
 - Discovery owns bounded-window activity qualification, but not deterministic
   scam/rug risk approval, strategy evaluation, or execution.
@@ -160,6 +170,7 @@ deployment topology.
 - Raydium is post-Pump venue enrichment in the initial scope, not an
   unrestricted independent discovery feed.
 - The hosted Sites UI remains disconnected from the local backend until a
-  separately designed remote deployment exists.
+  separately designed remote deployment exists; a hosted worker must not
+  pretend its own loopback is the user's computer.
 - Discovery, risk, strategy, AI, projection, and portfolio components never
   possess signing authority.

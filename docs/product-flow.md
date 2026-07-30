@@ -3,9 +3,10 @@
 ## End-to-end
 
 1. **Start locally** — the React interface sends a locally guarded command to
-   the Rust server. The server verifies the configured HTTP RPC's pinned Solana
-   genesis identity before binding the database or opening intake; the browser
-   never owns collector state.
+   the same-origin Vinext gateway, which forwards only the allowlisted command
+   to the loopback Rust server. The server verifies the configured HTTP RPC's
+   pinned Solana genesis identity before binding the database or opening
+   intake; the browser never owns collector state.
 2. **Pump intake** — WebSocket PubSub observes relevant Pump and PumpSwap
    notifications. The server ignores failed transactions and predecodes direct
    program-data logs. Fresh Pump creation or PumpSwap pool-creation events
@@ -74,10 +75,11 @@
    computer restarts unless the database is deliberately reset. The validated
    local API port, Paper/Live presentation, and adjustable sidebar/inspector
    widths persist separately in browser `localStorage`. The port only selects
-   `http://127.0.0.1:<port>/api/v1`, must match the restarted backend's
-   `API_PORT`, and does not weaken Host or CORS checks. These preferences have
-   no authorization power; order drafts, unsaved form text, and transient
-   navigation do not persist.
+   same-origin `/api/local-backend/<port>/api/v1`, which the local-host-only
+   Vinext gateway maps to `http://127.0.0.1:<port>/api/v1`. It must match the
+   restarted backend's `API_PORT` and does not weaken the gateway or Rust
+   authority checks. These preferences have no authorization power; order
+   drafts, unsaved form text, and transient navigation do not persist.
 9. **Discovery projection (implemented)** — the default `QUALIFIED_ONLY` feed
    shows only current `QUALIFIED` candidates. Counters separately report current
    observed/qualified tokens, queued structural facts, active qualification
@@ -148,7 +150,10 @@ dependency; wallet controls belong only to Live mode.
 
 The selected topology is local. By default, `localhost:3000` sends HTTP
 commands and receives authoritative snapshots plus named SSE notifications
-from `127.0.0.1:8080`. A different browser-local port works only when it
-matches the backend `API_PORT`; the browser host and `/api/v1` path remain
-fixed. The Rust server alone talks to PostgreSQL and Solana. The hosted Sites
-preview remains disconnected because it has no remotely deployed Rust backend.
+through same-origin `/api/local-backend/8080/api/v1`. The loopback-bound
+Vinext gateway forwards that allowlisted traffic to `127.0.0.1:8080`, strips
+browser credentials and `Origin`, and streams SSE rather than buffering it. A
+different browser-local port works only when it matches the backend
+`API_PORT`. The Rust server alone talks to PostgreSQL and Solana. The hosted
+Sites preview remains disconnected because its runtime cannot reach the
+user's loopback backend.

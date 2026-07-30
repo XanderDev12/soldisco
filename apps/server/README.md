@@ -65,6 +65,11 @@ supervised state: `STARTING`, `RUNNING`, `DEGRADED`, or `ERROR`. Stop cancels
 the collection tasks without terminating the HTTP server or deleting durable
 observations. Both commands require the fixed local-control header, the exact
 configured Host, and—when a browser supplies it—the exact configured Origin.
+The supported UI reaches these routes through the local Vinext gateway. That
+gateway validates the local browser request, removes browser credentials and
+`Origin`, preserves only the required protocol headers, and opens a new
+loopback request whose Host matches `API_HOST:API_PORT`. Direct browser access
+remains governed by the server's exact CORS policy.
 `GET /api/v1/settings/prefilter-defaults` exposes the current values and
 supported bounds. Its locally guarded `PUT` replacement requires the stream to
 be stopped and an exact expected revision, preventing hidden restarts and
@@ -142,8 +147,11 @@ Prefilter Defaults, Qualification Defaults, and requested-running stream intent
 are backend settings and therefore live in PostgreSQL. The browser's
 validated local API port, execution-mode presentation, and adjustable dashboard
 widths live separately in `localStorage`. The browser port selects only
-`http://127.0.0.1:<port>/api/v1`, must match `API_PORT`, and cannot rebind the
-server; changing the bind port requires a server restart. `API_HOST`,
-`API_PORT`, and `WEB_ORIGIN` remain server configuration, including exact
-request-authority and CORS checks. Order drafts and transient navigation are
-deliberately not backend settings or execution authorization.
+`/api/local-backend/<port>/api/v1` on the web origin; the loopback-only Vinext
+gateway maps that path to `http://127.0.0.1:<port>/api/v1`. It must match
+`API_PORT` and cannot rebind the server; changing the bind port requires a
+server restart. The gateway is endpoint/method allowlisted and is not a
+general-purpose local proxy. `API_HOST`, `API_PORT`, and `WEB_ORIGIN` remain
+server configuration, including exact request-authority and direct-access
+CORS checks. Order drafts and transient navigation are deliberately not
+backend settings or execution authorization.

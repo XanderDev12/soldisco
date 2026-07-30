@@ -4,6 +4,7 @@ export const localApiPortPreferenceStorageKey =
 
 const LOCAL_API_HOST = "127.0.0.1";
 const LOCAL_API_PATH = "/api/v1";
+const LOCAL_API_PROXY_PATH = "/api/local-backend";
 // Fetch-blocked ports are excluded. Port 80 is also excluded because URL
 // normalization omits it from Host while the Rust guard expects host:port.
 const unsupportedLocalApiPorts = new Set([
@@ -55,6 +56,27 @@ export function buildLocalApiBaseUrl(
     );
   }
   return `http://${LOCAL_API_HOST}:${parsedPort}${LOCAL_API_PATH}`;
+}
+
+export function buildLocalApiProxyBaseUrl(
+  port = DEFAULT_LOCAL_API_PORT,
+): string {
+  const parsedPort = parseLocalApiPort(port);
+  if (parsedPort === null) {
+    throw new RangeError(
+      "The local API port must be a browser-safe integer from 1 to 65535.",
+    );
+  }
+  return `${LOCAL_API_PROXY_PATH}/${parsedPort}${LOCAL_API_PATH}`;
+}
+
+export function isLocalHttpUrl(url: URL): boolean {
+  return (
+    url.protocol === "http:" &&
+    localPageHostnames.has(url.hostname) &&
+    url.username === "" &&
+    url.password === ""
+  );
 }
 
 export function readLocalApiPortPreference(
@@ -110,10 +132,7 @@ export function resolveLocalApiUrl(
   }
 
   if (
-    pageUrl.protocol !== "http:" ||
-    !localPageHostnames.has(pageUrl.hostname) ||
-    pageUrl.username !== "" ||
-    pageUrl.password !== "" ||
+    !isLocalHttpUrl(pageUrl) ||
     pageUrl.pathname !== "/" ||
     pageUrl.search !== "" ||
     pageUrl.hash !== ""
@@ -122,7 +141,7 @@ export function resolveLocalApiUrl(
   }
 
   return {
-    baseUrl: buildLocalApiBaseUrl(parsedPort),
+    baseUrl: buildLocalApiProxyBaseUrl(parsedPort),
     reason: "LOCAL",
   };
 }

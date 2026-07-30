@@ -96,11 +96,14 @@ pipeline; actual task handles and health states remain runtime facts.
 The browser separately stores only the validated local API port, Paper/Live
 presentation choice, and adjustable sidebar/inspector widths in versioned
 `localStorage` entries. The port resolves only
-`http://127.0.0.1:<port>/api/v1`, must match the backend `API_PORT`, and does
-not rebind the server or alter its Host/CORS policy. These preferences do not
-define domain state or grant execution authority. Order drafts, unsaved form
-text, active navigation, selection, tabs, and modals are transient rather than
-replayable or durable state.
+same-origin `/api/local-backend/<port>/api/v1`, which the local Vinext gateway
+maps to `http://127.0.0.1:<port>/api/v1`. It must match the backend `API_PORT`
+and does not rebind the server or alter its Host/direct-access CORS policy.
+These preferences do not define domain state or grant execution authority.
+Order drafts, unsaved form text, active navigation, selection, tabs, and
+modals are transient rather than replayable or durable state. Gateway routing
+is transport state only and never becomes part of a discovery record,
+qualification snapshot, replay, or strategy decision.
 
 The server commits a normalized discovery, its confirmed bounded window, pinned
 settings, and durable work state before notifying downstream workers. Matching

@@ -8,16 +8,18 @@ from later screening, enrichment, strategy, and execution work.
 ## Runtime topology
 
 ```text
-React/TypeScript UI               Rust modular monolith             PostgreSQL
-localhost:3000  --HTTP + SSE----> 127.0.0.1:8080 --SQLx only------> 127.0.0.1:5432
-                                          |
-                                          +--HTTP RPC-------------> Solana
-                                          +--WebSocket PubSub-----> Solana
+Browser                    Vinext local gateway                   Rust modular monolith             PostgreSQL
+localhost:3000 --HTTP/SSE-> /api/local-backend/8080/api/v1 -----> 127.0.0.1:8080 --SQLx only------> 127.0.0.1:5432
+                                                                         |
+                                                                         +--HTTP RPC-------------> Solana
+                                                                         +--WebSocket PubSub-----> Solana
 ```
 
 The diagram shows the default ports. The browser may persist a different API
-port, but its host remains `127.0.0.1`, its path remains `/api/v1`, and the
-selected port must match the restarted server's `API_PORT`.
+port, but it always calls same-origin
+`/api/local-backend/<port>/api/v1`. The local Vinext gateway maps that
+allowlisted path to `http://127.0.0.1:<port>/api/v1`, and the selected port
+must match the restarted server's `API_PORT`.
 
 All three Soldisco components are intended to run on the user's computer. The
 Rust process is the only database client. The browser never receives database
@@ -27,13 +29,16 @@ implemented.
 
 The existing Sites deployment remains a disconnected UI preview. Hosting the
 Rust collector or database is explicitly deferred; this architecture makes no
-cloud-service or paid-service assumption.
+cloud-service or paid-service assumption. A hosted worker's loopback is its
+own remote environment, not the user's machine, so it cannot reuse the local
+gateway to reach Rust.
 
 ## Selected technologies
 
 | Responsibility | Selection | Purpose |
 | --- | --- | --- |
 | Browser interface | Existing React and TypeScript app | Render projections and collect explicit user intent |
+| Local browser gateway | Vinext route handler | Keep browser HTTP/SSE same-origin while forwarding an allowlisted contract to loopback Rust |
 | Backend language | Stable Rust | Continuous decoding, concurrency, deterministic processing, and security-sensitive future work |
 | Async runtime | Tokio | Supervised background tasks, bounded channels, timers, and graceful shutdown |
 | HTTP layer | Axum with Tower middleware | Commands, snapshots, health, browser-safe errors, and SSE |
@@ -51,7 +56,12 @@ the first backend.
 
 ```text
 apps/
-├── web/                         Existing React/TypeScript interface
+├── web/                         React/TypeScript interface
+│   └── app/
+│       ├── api/local-backend/[port]/api/v1/[...path]/route.ts
+│       │                        Same-origin gateway route
+│       └── lib/soldisco-api/localProxy.ts
+│                                Allowlist, header, body, and streaming policy
 └── server/                      The single Rust executable
     └── src/
         ├── main.rs              Process startup and graceful shutdown
@@ -105,8 +115,9 @@ the discovery process merely because both are written in Rust.
 
 ## What the API is
 
-The API is the browser-facing portion of `apps/server`; it is not a second
-backend service.
+The API is the UI-facing transport-contract portion of `apps/server`; it is not
+a second backend service. The local browser reaches it through the same-origin
+Vinext gateway, while the Rust routes themselves remain mounted at `/api/v1`.
 
 Regular HTTP handles finite interactions:
 
@@ -142,12 +153,25 @@ mid-flight.
 The validated local API port, execution-mode presentation, and adjustable
 sidebar/inspector widths are versioned browser `localStorage` preferences, not
 API settings. The frontend has no endpoint/origin environment variables: its
-port is applied only to `http://127.0.0.1:<port>/api/v1`, is shared by all
-HTTP/SSE consumers, and must match server `API_PORT`. It does not rebind the
-backend or change the exact `API_HOST:API_PORT` authority and `WEB_ORIGIN` CORS
-checks. These preferences grant no wallet or execution authority. Unsaved
-settings text, order drafts, active navigation, selections, tabs, and modals
-remain transient.
+port is applied only to same-origin
+`/api/local-backend/<port>/api/v1`, is shared by all HTTP/SSE consumers, and
+must match server `API_PORT`. The gateway maps that path to the fixed upstream
+host and Rust path; the preference does not rebind the backend or change the
+exact `API_HOST:API_PORT` authority and direct-access `WEB_ORIGIN` CORS checks.
+These preferences grant no wallet or execution authority. Unsaved settings
+text, order drafts, active navigation, selections, tabs, and modals remain
+transient.
+
+The gateway is a narrow local transport boundary, not a general reverse proxy.
+Both Vinext development and production-start modes bind to loopback. Before
+forwarding, the gateway requires a local page host, rejects foreign browser
+origins and cross-site Fetch Metadata, matches an explicit Soldisco
+endpoint/method allowlist, and rejects every other path or method. It forwards
+only required protocol headers, removes cookies, authorization data, other
+browser credentials, and `Origin`, and lets the upstream fetch construct the
+exact Rust Host. Its SSE response remains streaming rather than being buffered
+as a finite payload, and the upstream request follows browser disconnect
+cancellation.
 
 Start and Stop are idempotent supervisor commands. Start launches one tracked
 pipeline and reports its actual `STARTING`, `RUNNING`, `DEGRADED`, or `ERROR`
@@ -157,6 +181,11 @@ when the server restarts. Route handlers request state changes through the
 supervisor; they do not spawn untracked collectors themselves. Both commands
 require `X-Soldisco-Control: soldisco-local-ui-v1` and the exact configured
 Host. A supplied browser Origin must also exactly match `WEB_ORIGIN`.
+The supported UI reaches these commands through the local gateway. The
+gateway first validates the same-origin browser request, then creates a
+separate origin-free loopback request with the required control header and
+configured Rust authority. The server's exact CORS rule remains in force for
+any direct browser request.
 
 SSE keeps one long-lived HTTP response open so the server can publish a named
 `soldisco` event for:
@@ -380,14 +409,20 @@ archive/expiry policy is still required before indefinite mainnet operation.
 
 ## Local-only operating assumptions
 
-- The web app binds to `localhost:3000`.
+- The Vinext development and production-start servers bind to loopback port
+  `3000`, never all interfaces by default.
 - The API binds to loopback at `127.0.0.1:8080` by default.
 - A browser-local API port can replace `8080` only after `API_PORT` is changed
-  and the Rust server is restarted; the browser continues using fixed host
-  `127.0.0.1` and path `/api/v1`.
+  and the Rust server is restarted; the browser continues using same-origin
+  `/api/local-backend/<port>/api/v1`.
+- The gateway's only upstream shape is
+  `http://127.0.0.1:<port>/api/v1`, and its endpoint/method allowlist prevents
+  it from becoming a local SSRF primitive.
 - PostgreSQL binds locally at `127.0.0.1:5432`.
 - CORS allows exactly the configured local `WEB_ORIGIN`, not arbitrary sites,
-  and guarded writes require the configured `API_HOST:API_PORT` authority.
+  for direct browser access. Gateway requests cross a separately validated
+  same-origin boundary, strip browser `Origin`, and guarded writes still
+  require the configured `API_HOST:API_PORT` authority.
 - Solana RPC endpoints are outbound dependencies of the Rust server.
 - The public Solana endpoints in `.env.example` use one paced discovery read
   per second and a five-second shared cooldown after a provider rate-limit
@@ -407,4 +442,7 @@ A future deployment can package the same Rust binary and connect it to a
 managed PostgreSQL service without changing the domain boundaries. That work
 will require explicit decisions about authentication, TLS, secret storage,
 backups, RPC capacity, retention, observability, cost, and access control. It is
-not part of the current implementation.
+not part of the current implementation. The hosted Sites preview remains
+disconnected until that remote backend and its authenticated gateway are
+designed; it must not attempt to address a user's loopback through the hosted
+worker.

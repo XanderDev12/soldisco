@@ -50,7 +50,7 @@ The current Rust foundation loads and validates:
 | `LOG_LEVEL` | Local structured-log filter |
 | `API_HOST` | Loopback only, normally `127.0.0.1` |
 | `API_PORT` | Rust HTTP/SSE port, normally `8080` |
-| `WEB_ORIGIN` | Exact local browser origin, normally `http://localhost:3000` |
+| `WEB_ORIGIN` | Exact origin allowed for direct browser access, normally `http://localhost:3000`; the supported same-origin gateway performs its own local-origin validation |
 | `DATABASE_URL` | Local PostgreSQL connection used only by Rust |
 | `DATABASE_MAX_CONNECTIONS` | Small bounded SQLx connection pool |
 | `DATABASE_MAX_BYTES` | Hard local database safety limit; defaults to 5 GiB |
@@ -76,36 +76,48 @@ The current Rust foundation loads and validates:
 | `COLLECTOR_QUEUE_CAPACITY` | Bound reused for ahead-of-HTTP live notification work, the collector-to-processor queue, and provisional-activity holding, from 1 through 100,000; defaults to 2,048. Pending activity gets a release deadline equal to the discovery-age allowance plus the HTTP timeout, without extending its receipt-time observation window |
 | `STREAM_START_TIMEOUT_MS` | Maximum command wait for an initial stream result |
 
-## Browser-local API port
+## Browser-local API port and same-origin gateway
 
 The frontend has no environment variable for its API endpoint or page origin.
-It always constructs the versioned API base as
-`http://127.0.0.1:<port>/api/v1`. Only the port is adjustable: it must be a
+It always constructs the same-origin, versioned browser API base as
+`/api/local-backend/<port>/api/v1`. Only the port is adjustable: it must be a
 browser-safe whole number from `1` through `65535`, defaults to `8080`, and is
 stored under a versioned browser `localStorage` key,
 `soldisco.local-api-port.v1`. Fetch-restricted ports are rejected. Port `80` is
 also rejected because URL normalization would omit it from the request
 authority while the Rust control guard requires the exact configured
-`API_HOST:API_PORT`. The same resolved endpoint is shared by Discovery
-snapshots and SSE, stream commands, token inspection, Prefilter Defaults, and
-Qualification Defaults. Clearing browser storage restores port `8080`; if
-storage is blocked, the safe in-memory/default behavior remains available.
+`API_HOST:API_PORT`. The same gateway base is shared by Discovery snapshots and
+SSE, stream commands, token inspection, Prefilter Defaults, and Qualification
+Defaults. Clearing browser storage restores port `8080`; if storage is
+blocked, the safe in-memory/default behavior remains available.
 
 Changing this browser preference does not rebind or restart the Rust server.
 The selected port must equal the backend `API_PORT`. Changing `API_PORT`
 requires a backend restart, after which the browser preference must be updated
-to match. The frontend host remains fixed at `127.0.0.1` and the path remains
-fixed at `/api/v1`; this is not a free-form URL field and cannot contain
-credentials.
+to match. The browser remains on the web app's origin; the gateway maps the
+selected path to the fixed upstream
+`http://127.0.0.1:<port>/api/v1`. This is not a free-form URL field and cannot
+contain an upstream host, credentials, or an arbitrary path.
+
+Both Vinext development and production-start commands bind the web server to
+loopback. The gateway accepts only local-host requests, rejects foreign
+browser origins and cross-site Fetch Metadata, and exposes only the explicit
+Soldisco endpoint/method matrix. It forwards only the protocol headers needed
+by Rust, strips cookies, authorization data, other browser credentials, and
+`Origin`, and streams `/events` without buffering. It must never become a
+general local-network or loopback proxy. The hosted Sites build remains
+disconnected because its server-side loopback is not the user's computer.
 
 `API_HOST`, `API_PORT`, and `WEB_ORIGIN` remain backend environment
-configuration. For this browser client, `API_HOST` must be `127.0.0.1`, while
-`WEB_ORIGIN` must exactly equal the actual page origin (normally
+configuration. `API_HOST` must be `127.0.0.1`, while `WEB_ORIGIN` remains the
+exact origin allowed for any direct browser request (normally
 `http://localhost:3000`). Start, stop, and settings writes send the fixed
-local-control header `X-Soldisco-Control: soldisco-local-ui-v1`. The Rust server
-still rejects request authorities other than its configured
-`API_HOST:API_PORT`, and CORS still rejects browser origins other than
-`WEB_ORIGIN`. A port preference changes neither security check.
+local-control header `X-Soldisco-Control: soldisco-local-ui-v1`. The gateway
+validates the same-origin local request before removing its browser `Origin`;
+its new upstream request has the configured `API_HOST:API_PORT` authority. The
+Rust server still rejects other authorities, and its exact `WEB_ORIGIN` CORS
+policy remains authoritative for any direct browser request. A port preference
+changes neither security boundary.
 
 ## Implemented Compose variables
 
@@ -208,7 +220,7 @@ state boundary. The local API port, Paper/Live presentation choice, and
 adjustable sidebar/inspector widths are validated and stored under versioned
 keys in browser `localStorage`. Clearing that browser storage restores safe
 defaults, and a blocked or full storage provider leaves the in-memory UI
-usable. The API port only selects the fixed loopback endpoint described above;
+usable. The API port only selects the same-origin gateway path described above;
 the mode is presentation only and never authorizes wallet access, signing, or
 execution. Unsaved settings form text, order-side/amount drafts, the active
 destination, selected token, inspector tab, and open modals are transient and
