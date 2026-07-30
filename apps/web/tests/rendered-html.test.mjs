@@ -31,7 +31,9 @@ const dashboardSourceFiles = [
   "useCompactNavigation.ts",
   "useDiscoveryBackend.ts",
   "useExecutionModePreference.ts",
+  "useLocalApiPortPreference.ts",
   "controls/ExecutionModeCard.tsx",
+  "controls/LocalApiConnectionCard.tsx",
   "controls/NumberSettingField.tsx",
   "controls/PrefilterDefaultsForm.tsx",
   "controls/PrefilterDefaultsSection.tsx",
@@ -216,7 +218,27 @@ test("keeps empty trackers and execution boundaries explicit", async () => {
     sources["Sidebar.tsx"],
     /onClick=\{\(\) => onOpenView\(item\.id\)\}/,
   );
-  assert.match(dashboard, /useDiscoveryBackend\(\)/);
+  assert.match(dashboard, /useDiscoveryBackend\(\{/);
+  assert.match(
+    sources["useLocalApiPortPreference.ts"],
+    /localApiPortPreferenceStorageKey/,
+  );
+  assert.match(
+    sources["controls/LocalApiConnectionCard.tsx"],
+    /Local API Connection/,
+  );
+  assert.match(
+    sources["controls/LocalApiConnectionCard.tsx"],
+    /Requests sent\. Attempting \$\{backend\.apiBaseUrl\}/,
+  );
+  assert.match(
+    sources["controls/LocalApiConnectionCard.tsx"],
+    /http:\/\/127\.0\.0\.1:/,
+  );
+  assert.doesNotMatch(
+    allDashboardSource,
+    /NEXT_PUBLIC_SOLDISCO_API_URL|NEXT_PUBLIC_SOLDISCO_WEB_ORIGIN/,
+  );
   assert.match(dashboard, /void toggleStream\(\)/);
   assert.match(
     dashboard,
@@ -531,6 +553,7 @@ test("keeps dashboard UI split across focused modules", async () => {
     "views/ReplaysView.tsx",
     "views/ControlsView.tsx",
     "controls/ExecutionModeCard.tsx",
+    "controls/LocalApiConnectionCard.tsx",
     "controls/NumberSettingField.tsx",
     "controls/PrefilterDefaultsForm.tsx",
     "controls/PrefilterDefaultsSection.tsx",
@@ -550,6 +573,7 @@ test("keeps dashboard UI split across focused modules", async () => {
     "BackendStatusNotice.tsx",
     "useDiscoveryBackend.ts",
     "useExecutionModePreference.ts",
+    "useLocalApiPortPreference.ts",
   ]) {
     await access(new URL(path, dashboardRoot));
   }

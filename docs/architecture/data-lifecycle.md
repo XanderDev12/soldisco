@@ -93,11 +93,14 @@ revision and values, so a later edit never rewrites an open or finalized
 window. Requested-running intent is restored by launching a fresh supervised
 pipeline; actual task handles and health states remain runtime facts.
 
-The browser separately stores only the Paper/Live presentation choice and
-adjustable sidebar/inspector widths in versioned `localStorage` entries. These
-preferences do not define domain state or grant execution authority. Order
-drafts, unsaved form text, active navigation, selection, tabs, and modals are
-transient rather than replayable or durable state.
+The browser separately stores only the validated local API port, Paper/Live
+presentation choice, and adjustable sidebar/inspector widths in versioned
+`localStorage` entries. The port resolves only
+`http://127.0.0.1:<port>/api/v1`, must match the backend `API_PORT`, and does
+not rebind the server or alter its Host/CORS policy. These preferences do not
+define domain state or grant execution authority. Order drafts, unsaved form
+text, active navigation, selection, tabs, and modals are transient rather than
+replayable or durable state.
 
 The server commits a normalized discovery, its confirmed bounded window, pinned
 settings, and durable work state before notifying downstream workers. Matching

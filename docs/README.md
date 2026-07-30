@@ -34,10 +34,13 @@ Rust-owned domain and API contracts are authoritative for connected backend
 behavior. The implemented local slice covers Pump/PumpSwap collection,
 durable bounded-window activity qualification, the default `QUALIFIED_ONLY`
 discovery projection, PostgreSQL-persisted Controls settings and stream intent,
-safe browser-local layout/mode preferences, and HTTP/SSE UI wiring. Documents
-distinguish this inexpensive qualification gate from deferred deterministic
-risk, Raydium, strategy, AI, trading, and wallet behavior.
+safe browser-local API-port/layout/mode preferences, and HTTP/SSE UI wiring.
+Documents distinguish this inexpensive qualification gate from deferred
+deterministic risk, Raydium, strategy, AI, trading, and wallet behavior.
 
-The current runtime target is entirely local: React on `localhost:3000`, the
-Rust/Axum server on `127.0.0.1:8080`, and PostgreSQL on
-`127.0.0.1:5432`. The hosted Sites UI is not connected to the local backend.
+The current runtime target is entirely local. By default, React runs on
+`localhost:3000`, the Rust/Axum server on `127.0.0.1:8080`, and PostgreSQL on
+`127.0.0.1:5432`. The validated browser-local API port can replace `8080` only
+when it matches the restarted server's `API_PORT`; host `127.0.0.1` and path
+`/api/v1` remain fixed. The hosted Sites UI is not connected to the local
+backend.

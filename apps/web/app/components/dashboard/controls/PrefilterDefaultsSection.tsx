@@ -7,6 +7,7 @@ import { PrefilterDefaultsForm } from "./PrefilterDefaultsForm";
 import { usePrefilterDefaults } from "./usePrefilterDefaults";
 
 type PrefilterDefaultsSectionProps = {
+  apiBaseUrl: string;
   backendConnected: boolean;
   streamStatus: StreamStatus | null;
 };
@@ -19,11 +20,12 @@ const fixedPolicies = [
 ] as const;
 
 export function PrefilterDefaultsSection({
+  apiBaseUrl,
   backendConnected,
   streamStatus,
 }: PrefilterDefaultsSectionProps) {
   const { settings, status, errorMessage, refresh, save } =
-    usePrefilterDefaults(backendConnected);
+    usePrefilterDefaults(backendConnected, apiBaseUrl);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const streamStopped = streamStatus === "STOPPED";
 

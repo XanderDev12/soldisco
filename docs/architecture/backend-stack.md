@@ -15,6 +15,10 @@ localhost:3000  --HTTP + SSE----> 127.0.0.1:8080 --SQLx only------> 127.0.0.1:54
                                           +--WebSocket PubSub-----> Solana
 ```
 
+The diagram shows the default ports. The browser may persist a different API
+port, but its host remains `127.0.0.1`, its path remains `/api/v1`, and the
+selected port must match the restarted server's `API_PORT`.
+
 All three Soldisco components are intended to run on the user's computer. The
 Rust process is the only database client. The browser never receives database
 credentials and does not infer domain truth from local UI state. The server and
@@ -135,10 +139,15 @@ updates may be saved while collection runs; each subsequently confirmed window
 pins the current revision and values, so existing windows never change policy
 mid-flight.
 
-The execution-mode presentation and adjustable sidebar/inspector widths are
-versioned browser `localStorage` preferences, not API settings. They grant no
-wallet or execution authority. Unsaved settings text, order drafts, active
-navigation, selections, tabs, and modals remain transient.
+The validated local API port, execution-mode presentation, and adjustable
+sidebar/inspector widths are versioned browser `localStorage` preferences, not
+API settings. The frontend has no endpoint/origin environment variables: its
+port is applied only to `http://127.0.0.1:<port>/api/v1`, is shared by all
+HTTP/SSE consumers, and must match server `API_PORT`. It does not rebind the
+backend or change the exact `API_HOST:API_PORT` authority and `WEB_ORIGIN` CORS
+checks. These preferences grant no wallet or execution authority. Unsaved
+settings text, order drafts, active navigation, selections, tabs, and modals
+remain transient.
 
 Start and Stop are idempotent supervisor commands. Start launches one tracked
 pipeline and reports its actual `STARTING`, `RUNNING`, `DEGRADED`, or `ERROR`
@@ -373,8 +382,12 @@ archive/expiry policy is still required before indefinite mainnet operation.
 
 - The web app binds to `localhost:3000`.
 - The API binds to loopback at `127.0.0.1:8080` by default.
+- A browser-local API port can replace `8080` only after `API_PORT` is changed
+  and the Rust server is restarted; the browser continues using fixed host
+  `127.0.0.1` and path `/api/v1`.
 - PostgreSQL binds locally at `127.0.0.1:5432`.
-- CORS allows the configured local web origin, not arbitrary sites.
+- CORS allows exactly the configured local `WEB_ORIGIN`, not arbitrary sites,
+  and guarded writes require the configured `API_HOST:API_PORT` authority.
 - Solana RPC endpoints are outbound dependencies of the Rust server.
 - The public Solana endpoints in `.env.example` use one paced discovery read
   per second and a five-second shared cooldown after a provider rate-limit

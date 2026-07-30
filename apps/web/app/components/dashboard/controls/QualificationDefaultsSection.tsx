@@ -6,14 +6,16 @@ import { QualificationDefaultsForm } from "./QualificationDefaultsForm";
 import { useQualificationDefaults } from "./useQualificationDefaults";
 
 type QualificationDefaultsSectionProps = {
+  apiBaseUrl: string;
   backendConnected: boolean;
 };
 
 export function QualificationDefaultsSection({
+  apiBaseUrl,
   backendConnected,
 }: QualificationDefaultsSectionProps) {
   const { settings, status, errorMessage, refresh, save } =
-    useQualificationDefaults(backendConnected);
+    useQualificationDefaults(backendConnected, apiBaseUrl);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
 
   async function saveDefaults(

@@ -7,6 +7,9 @@
 - Add browser-local, persistent, user-adjustable sidebar and inspector regions.
 - Remember Paper/Live presentation without treating it as authorization; keep
   order drafts and transient navigation session-only.
+- Persist only a validated browser-local API port for the fixed
+  `http://127.0.0.1:<port>/api/v1` endpoint; keep endpoint/origin variables out
+  of the frontend build.
 - Keep one Discovery destination and one Positions destination; avoid separate
   first-pass, watchlist, or duplicate positions surfaces.
 - Keep wallet and execution controls unable to connect, sign, or trade.
@@ -23,7 +26,9 @@
   boundary.
 - Run the PostgreSQL migration and persistence integration test against a
   disposable PostgreSQL 17 service in GitHub CI.
-- Establish the local topology: React `:3000`, Rust `:8080`, PostgreSQL `:5432`.
+- Establish the default local topology: React `:3000`, Rust `:8080`,
+  PostgreSQL `:5432`; a custom browser API port must match the restarted Rust
+  `API_PORT`.
 - Define browser contracts for finite HTTP commands/snapshots and one-way SSE
   projection updates.
 - Keep the hosted Sites UI explicitly disconnected from the local backend.

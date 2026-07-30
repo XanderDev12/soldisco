@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
+import { act, createElement } from "react";
+import { JSDOM } from "jsdom";
 import { createServer } from "vite";
 
 const apiRoot = new URL("../app/lib/soldisco-api/", import.meta.url);
@@ -273,6 +275,7 @@ test("derives truthful controls from full stream state", async () => {
   assert.equal(unavailable.canCommand, false);
 
   const staleBackend = mapBackendStatus({
+    apiBaseUrl: "http://127.0.0.1:8080/api/v1",
     connection: "UNAVAILABLE",
     health: { status: "UP", database: "UP", stream: "RUNNING" },
     healthFresh: false,
@@ -282,6 +285,10 @@ test("derives truthful controls from full stream state", async () => {
     command: null,
     error: null,
   });
+  assert.equal(
+    staleBackend.apiBaseUrl,
+    "http://127.0.0.1:8080/api/v1",
+  );
   assert.equal(staleBackend.overall, null);
   assert.equal(staleBackend.database, null);
   assert.equal(staleBackend.stream.status, null);
@@ -1074,34 +1081,417 @@ test("validates and stores only the execution-mode presentation preference", asy
   );
 });
 
-test("refuses local API traffic from hosted pages", async () => {
-  const { resolveLocalApiUrl } = await loadApiModule("config.ts");
+test("validates and persists the shared loopback API port", async () => {
+  const {
+    DEFAULT_LOCAL_API_PORT,
+    buildLocalApiBaseUrl,
+    localApiPortPreferenceStorageKey,
+    parseLocalApiPort,
+    readLocalApiPortPreference,
+    resolveLocalApiUrl,
+    writeLocalApiPortPreference,
+  } = await loadApiModule("config.ts");
 
+  assert.equal(DEFAULT_LOCAL_API_PORT, 8080);
   assert.equal(
-    resolveLocalApiUrl("http://localhost:3000").baseUrl,
-    "http://127.0.0.1:8080/api/v1",
+    localApiPortPreferenceStorageKey,
+    "soldisco.local-api-port.v1",
+  );
+  assert.equal(buildLocalApiBaseUrl(), "http://127.0.0.1:8080/api/v1");
+  assert.equal(buildLocalApiBaseUrl(2), "http://127.0.0.1:2/api/v1");
+  assert.equal(
+    buildLocalApiBaseUrl(65_535),
+    "http://127.0.0.1:65535/api/v1",
+  );
+
+  for (const candidate of [2, 8080, 65_535, "8080", " 8080 "]) {
+    assert.notEqual(parseLocalApiPort(candidate), null);
+  }
+  for (const candidate of [
+    null,
+    "",
+    "1e3",
+    "8080.5",
+    "not-a-port",
+    0,
+    1,
+    80,
+    2049,
+    6000,
+    6667,
+    10080,
+    65_536,
+    8080.5,
+  ]) {
+    assert.equal(parseLocalApiPort(candidate), null);
+  }
+  assert.throws(
+    () => buildLocalApiBaseUrl(80),
+    /browser-safe integer from 1 to 65535/,
+  );
+
+  const values = new Map();
+  const storage = {
+    getItem(key) {
+      return values.get(key) ?? null;
+    },
+    setItem(key, value) {
+      values.set(key, value);
+    },
+  };
+  assert.equal(readLocalApiPortPreference(storage), 8080);
+  assert.equal(writeLocalApiPortPreference(storage, 9123), true);
+  assert.equal(values.get(localApiPortPreferenceStorageKey), "9123");
+  assert.equal(readLocalApiPortPreference(storage), 9123);
+  values.set(localApiPortPreferenceStorageKey, "corrupt");
+  assert.equal(readLocalApiPortPreference(storage), 8080);
+  assert.equal(
+    readLocalApiPortPreference({
+      getItem() {
+        throw new Error("storage blocked");
+      },
+    }),
+    8080,
   );
   assert.equal(
-    resolveLocalApiUrl("https://soldisco.example.com").reason,
-    "NON_LOCAL_PAGE",
+    writeLocalApiPortPreference(
+      {
+        setItem() {
+          throw new Error("storage blocked");
+        },
+      },
+      8080,
+    ),
+    false,
   );
+
+  for (const pageOrigin of [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://[::1]:3000",
+  ]) {
+    assert.deepEqual(resolveLocalApiUrl(pageOrigin, 9123), {
+      baseUrl: "http://127.0.0.1:9123/api/v1",
+      reason: "LOCAL",
+    });
+  }
+  for (const pageOrigin of [
+    "https://soldisco.example.com",
+    "https://localhost:3000",
+    "http://192.168.1.10:3000",
+    "file:///tmp/index.html",
+    "http://user:password@localhost:3000",
+    "http://localhost:3000/path",
+    "not a URL",
+  ]) {
+    assert.equal(
+      resolveLocalApiUrl(pageOrigin, 8080).reason,
+      "NON_LOCAL_PAGE",
+    );
+  }
   assert.equal(
-    resolveLocalApiUrl(
-      "http://localhost:3000",
-      "https://api.example.com",
-    ).reason,
-    "NON_LOCAL_API",
+    resolveLocalApiUrl("http://localhost:3000", 0).reason,
+    "INVALID_PORT",
   );
-  assert.equal(
-    resolveLocalApiUrl("http://127.0.0.1:3000").reason,
-    "LOCAL_ORIGIN_MISMATCH",
+});
+
+test("hydrates and reconnects every browser consumer without stale endpoint leakage", async () => {
+  const mockedGlobalNames = [
+    "window",
+    "document",
+    "self",
+    "navigator",
+    "HTMLElement",
+    "Node",
+    "Event",
+    "MessageEvent",
+    "StorageEvent",
+    "MutationObserver",
+    "getComputedStyle",
+    "fetch",
+    "EventSource",
+    "IS_REACT_ACT_ENVIRONMENT",
+  ];
+  const originalGlobals = new Map(
+    mockedGlobalNames.map(
+      (name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)],
+    ),
   );
-  assert.equal(
-    resolveLocalApiUrl(
-      "http://127.0.0.1:3000",
-      "http://127.0.0.1:8080/api/v1",
-      "http://127.0.0.1:3000",
-    ).reason,
-    "LOCAL",
-  );
+  const dom = new JSDOM("<!doctype html><div id=\"root\"></div>", {
+    url: "http://localhost:3000",
+  });
+  dom.window.localStorage.setItem("soldisco.local-api-port.v1", "9123");
+  const requestUrls = [];
+  const deferredOldRequests = [];
+  const eventSources = [];
+  let root;
+  let latest;
+
+  class FakeEventSource {
+    constructor(url) {
+      this.url = url;
+      this.onopen = null;
+      this.onerror = null;
+      this.closed = false;
+      eventSources.push(this);
+    }
+
+    addEventListener() {}
+
+    close() {
+      this.closed = true;
+    }
+  }
+
+  function responseFor(url, generation) {
+    const pathname = new URL(url).pathname;
+    let body;
+    if (pathname === "/api/v1/health") {
+      body = { status: "UP", database: "UP", stream: "STOPPED" };
+    } else if (pathname === "/api/v1/stream") {
+      body = { status: "STOPPED", requested_running: false };
+    } else if (pathname === "/api/v1/discovery") {
+      body = discoveryFixture();
+      body.sequence = generation === "old" ? 999 : 1;
+      body.tokens[0].symbol = generation === "old" ? "OLD" : "NEW";
+    } else if (
+      pathname === "/api/v1/settings/prefilter-defaults"
+    ) {
+      body = prefilterDefaultsFixture();
+    } else if (
+      pathname === "/api/v1/settings/qualification-defaults"
+    ) {
+      body = qualificationDefaultsFixture();
+    } else {
+      throw new Error(`Unexpected test request: ${url}`);
+    }
+
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  Object.defineProperties(globalThis, {
+    window: {
+      configurable: true,
+      writable: true,
+      value: dom.window,
+    },
+    document: {
+      configurable: true,
+      writable: true,
+      value: dom.window.document,
+    },
+    self: {
+      configurable: true,
+      writable: true,
+      value: dom.window,
+    },
+    navigator: {
+      configurable: true,
+      writable: true,
+      value: dom.window.navigator,
+    },
+    HTMLElement: {
+      configurable: true,
+      writable: true,
+      value: dom.window.HTMLElement,
+    },
+    Node: {
+      configurable: true,
+      writable: true,
+      value: dom.window.Node,
+    },
+    Event: {
+      configurable: true,
+      writable: true,
+      value: dom.window.Event,
+    },
+    MessageEvent: {
+      configurable: true,
+      writable: true,
+      value: dom.window.MessageEvent,
+    },
+    StorageEvent: {
+      configurable: true,
+      writable: true,
+      value: dom.window.StorageEvent,
+    },
+    MutationObserver: {
+      configurable: true,
+      writable: true,
+      value: dom.window.MutationObserver,
+    },
+    getComputedStyle: {
+      configurable: true,
+      writable: true,
+      value: dom.window.getComputedStyle.bind(dom.window),
+    },
+    EventSource: {
+      configurable: true,
+      writable: true,
+      value: FakeEventSource,
+    },
+    IS_REACT_ACT_ENVIRONMENT: {
+      configurable: true,
+      writable: true,
+      value: true,
+    },
+    fetch: {
+      configurable: true,
+      writable: true,
+      value: (input) => {
+        const url = String(input);
+        requestUrls.push(url);
+        if (url.includes("127.0.0.1:9123")) {
+          return new Promise((resolve) => {
+            deferredOldRequests.push({ url, resolve });
+          });
+        }
+        return Promise.resolve(responseFor(url, "new"));
+      },
+    },
+  });
+  Object.defineProperty(dom.window, "EventSource", {
+    configurable: true,
+    writable: true,
+    value: FakeEventSource,
+  });
+
+  async function flushReact() {
+    for (let index = 0; index < 4; index += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  }
+
+  try {
+    const [
+      { createRoot },
+      { useDiscoveryBackend },
+      { useLocalApiPortPreference },
+      { usePrefilterDefaults },
+      { useQualificationDefaults },
+    ] = await Promise.all([
+      import("react-dom/client"),
+      loadDashboardModule("useDiscoveryBackend.ts"),
+      loadDashboardModule("useLocalApiPortPreference.ts"),
+      loadDashboardModule("controls/usePrefilterDefaults.ts"),
+      loadDashboardModule("controls/useQualificationDefaults.ts"),
+    ]);
+
+    function Probe() {
+      const localApi = useLocalApiPortPreference();
+      const runtime = useDiscoveryBackend({
+        apiPort: localApi.ready ? localApi.port : null,
+        attemptRevision: localApi.attemptRevision,
+      });
+      const connected = runtime.backend.connection === "CONNECTED";
+      const prefilter = usePrefilterDefaults(
+        connected,
+        localApi.baseUrl,
+      );
+      const qualification = useQualificationDefaults(
+        connected,
+        localApi.baseUrl,
+      );
+      latest = { localApi, runtime, prefilter, qualification };
+      return null;
+    }
+
+    const container = dom.window.document.getElementById("root");
+    assert.ok(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(Probe));
+      await flushReact();
+    });
+
+    assert.equal(latest.localApi.port, 9123);
+    assert.equal(
+      latest.runtime.backend.apiBaseUrl,
+      "http://127.0.0.1:9123/api/v1",
+    );
+    assert.equal(latest.runtime.backend.connection, "CONNECTING");
+    assert.equal(requestUrls.length, 3);
+    assert.ok(
+      requestUrls.every((url) => url.includes("127.0.0.1:9123")),
+    );
+    assert.equal(eventSources.length, 1);
+
+    const switchedAt = requestUrls.length;
+    await act(async () => {
+      assert.equal(latest.localApi.connect(9333), true);
+      await flushReact();
+    });
+
+    assert.equal(
+      dom.window.localStorage.getItem("soldisco.local-api-port.v1"),
+      "9333",
+    );
+    assert.equal(eventSources[0].closed, true);
+    assert.equal(eventSources.length, 2);
+    assert.equal(latest.runtime.backend.connection, "CONNECTED");
+    assert.equal(
+      latest.runtime.backend.apiBaseUrl,
+      "http://127.0.0.1:9333/api/v1",
+    );
+    assert.equal(latest.runtime.discovery.tokens[0].symbol, "NEW");
+    assert.ok(
+      requestUrls
+        .slice(switchedAt)
+        .every((url) => url.includes("127.0.0.1:9333")),
+    );
+    assert.ok(
+      requestUrls.some((url) =>
+        url.endsWith("/settings/prefilter-defaults"),
+      ),
+    );
+    assert.ok(
+      requestUrls.some((url) =>
+        url.endsWith("/settings/qualification-defaults"),
+      ),
+    );
+
+    await act(async () => {
+      for (const request of deferredOldRequests) {
+        request.resolve(responseFor(request.url, "old"));
+      }
+      await flushReact();
+    });
+    assert.equal(
+      latest.runtime.backend.apiBaseUrl,
+      "http://127.0.0.1:9333/api/v1",
+    );
+    assert.equal(latest.runtime.discovery.tokens[0].symbol, "NEW");
+
+    const retriedAt = requestUrls.length;
+    await act(async () => {
+      assert.equal(latest.localApi.connect(9333), true);
+      await flushReact();
+    });
+    assert.equal(eventSources[1].closed, true);
+    assert.equal(eventSources.length, 3);
+    assert.equal(latest.runtime.backend.connection, "CONNECTED");
+    assert.ok(
+      requestUrls
+        .slice(retriedAt)
+        .every((url) => url.includes("127.0.0.1:9333")),
+    );
+  } finally {
+    if (root) {
+      await act(async () => {
+        root.unmount();
+        await flushReact();
+      });
+    }
+    dom.window.close();
+    for (const [name, descriptor] of originalGlobals) {
+      if (descriptor === undefined) {
+        delete globalThis[name];
+      } else {
+        Object.defineProperty(globalThis, name, descriptor);
+      }
+    }
+  }
 });

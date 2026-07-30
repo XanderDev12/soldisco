@@ -139,10 +139,15 @@ deployment topology.
 ## Boundaries
 
 - The UI consumes projections and collects intent; it does not own domain truth.
-- Execution-mode presentation and adjustable sidebar/inspector widths may
-  persist in browser `localStorage`, but they grant no backend or execution
-  authority. Unsaved settings text, order drafts, current navigation, and
-  selections remain transient.
+- The validated local API port, execution-mode presentation, and adjustable
+  sidebar/inspector widths may persist in browser `localStorage`, but they
+  grant no backend or execution authority. The port changes only
+  `http://127.0.0.1:<port>/api/v1`, must match server `API_PORT`, and cannot
+  rebind the backend.
+- Backend `API_HOST:API_PORT` request-authority checks and exact `WEB_ORIGIN`
+  CORS checks remain authoritative regardless of browser preferences.
+  Unsaved settings text, order drafts, current navigation, and selections
+  remain transient.
 - The local browser communicates with the Rust server through HTTP commands,
   snapshots, and SSE. It never connects directly to PostgreSQL.
 - Source decoders expose observations; they do not contain strategy rules.

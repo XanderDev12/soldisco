@@ -6,10 +6,12 @@ strategy evaluation, projection, and future execution.
 
 ## Selected local runtime
 
-The existing React/TypeScript interface runs on `localhost:3000`. It sends
-finite commands and snapshot requests to one Rust/Axum process on
+The existing React/TypeScript interface runs on `localhost:3000`. By default,
+it sends finite commands and snapshot requests to one Rust/Axum process on
 `127.0.0.1:8080` and receives named `soldisco` projection-change notifications
-through SSE. The Rust process alone connects to local PostgreSQL on
+through SSE. A versioned browser-local port may replace `8080` only when it
+matches the restarted server's `API_PORT`; browser host `127.0.0.1` and path
+`/api/v1` remain fixed. The Rust process alone connects to local PostgreSQL on
 `127.0.0.1:5432` through SQLx and to configurable Solana HTTP and WebSocket RPC
 endpoints.
 
@@ -136,9 +138,11 @@ focused module. Shared primitives are reused without combining independent
 screens into a single file. Regression tests verify the expected view files and
 keep the orchestration layer within a small line-count budget.
 
-The Paper/Live execution-mode presentation and adjustable sidebar/inspector
-widths are validated browser-local preferences. They persist in
-`localStorage` without granting wallet, signing, or execution authority.
+The local API port, Paper/Live execution-mode presentation, and adjustable
+sidebar/inspector widths are validated browser-local preferences. They persist
+in `localStorage` without granting wallet, signing, or execution authority. The
+port only selects `http://127.0.0.1:<port>/api/v1`; it does not rebind the
+backend or change its exact request-authority and `WEB_ORIGIN` CORS checks.
 Unsaved settings text, order drafts, active navigation, token selection, tabs,
 and modals remain transient.
 
